@@ -781,6 +781,9 @@ class AIReplyEngine:
     def _soften_handmade_words(self, reply: str) -> str:
         # 店主要求：只说“手绘/手工画的”，不说“纯手绘”“一笔笔”
         text = str(reply or "")
+        # 店主要求：回复里不出现价格数字
+        if re.search(r"\d+(?:\.\d+)?\s*(?:元|块钱|块)|[¥￥]\s*\d", text):
+            return "宝贝，标价就是卖价哈，没有少哦～😊"
         text = re.sub(r"纯(手绘|手工)", r"\1", text)
         text = re.sub(r"一笔一笔|一笔笔", "", text)
         # 店主要求：非手绘款不说“打印/印刷”，统一说“高清艺术微喷工艺”
@@ -967,7 +970,8 @@ class AIReplyEngine:
                 
                 # 构建商品信息
                 item_desc = f"商品标题: {self._shorten_text(item_info.get('title', '未知'), 120)}\n"
-                item_desc += f"商品价格: {item_info.get('price', '未知')}元\n"
+                # 店主要求（2026-11-21）：有平台活动，标价不一定是实付价，不把价格数字给AI
+                item_desc += "商品价格: 以买家下单页面显示为准（回复里不要报任何价格数字）\n"
                 item_desc += f"商品描述: {self._extract_readable_item_desc(item_info.get('desc'))}"
                 # 手绘/打印由程序按店主确认的手绘商品名单判断
                 _is_handmade = str(item_id) in HANDMADE_ITEM_IDS
