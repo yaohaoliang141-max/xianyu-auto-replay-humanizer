@@ -1,0 +1,31 @@
+# 改动记录
+
+基础：zhinianboke/xianyu-auto-reply `990f701`，2026-11-16 迁移到阿里云 ECS（Docker Compose，六个服务）。
+11-16 ~ 11-19 期间已有的定制（付款确认、一口价、发货提醒、随机延迟等）已包含在 `app/` 中。
+
+## 2026-11-21
+
+**AI 提示词（`prompts/ai-reply-prompt.txt`）**
+- 从约 3200 字的死板固定话术，改为自然亲切的卖家口吻；用历史 323 条真实买家消息回放测试后上线。
+- 所有规则按买家意思理解，不是关键词；不知道的事（框材质、画面细节、库存、别的款、看不到的图片）说「这个我问下店主哦」。
+- 尺寸、边框直接按当前商品简介回答；简介里的宣传话（假一赔十、价格可聊、发货前拍视频）不算承诺。
+- 买家抱怨时道歉、不争辩；避免「赔」「保证」字样（会被安全过滤整条替换）。
+- 所有画背面没有支架，回答「没有支架哦，是挂墙的～」，不提小钩子。
+- 换款：未发货 → 申请退款后重新拍；已发货 → 不能换款。
+- 签收 / 确认收货后买家表达任何不满意 → 「您好，我们有运费险，这边您可以直接退货，运费平台也会赔付给您，辛苦了～」。
+
+**代码**
+- `websocket/app/services/xianyu/ai_reply_engine.py`
+  - 每个会话 AI 回复上限 5 → 7。
+  - `HANDMADE_ITEM_IDS` 手绘白名单（鸢尾花、盛开的杏花、莫奈·塞纳河晨光），向 AI 提供「制作方式」。
+  - `_soften_handmade_words`：去掉「纯手绘」「一笔笔」，「打印/印刷」改为「高清艺术微喷」。
+  - `_lookup_order_status`：向 AI 提供「订单状态」（待发货 / 运输中 / 已签收 / 已确认收货 / 退款中…）。
+  - 安全过滤放行店主确认的退货话术「运费平台也会赔付给您」。
+- `websocket/app/services/xianyu/message_handler.py`：收到「订单已签收」卡片时，把 `signed_at` 记到对应订单。
+- `websocket/app/services/xianyu/auto_reply_service.py`：回复延迟改为 最小值 + 0~13 秒（账号设置最小值 7 → 7~20 秒）。
+- `websocket/app/services/xianyu/xianyu_async.py`：即时自动评价改为后台排队，逐条间隔 10~20 秒。
+- `scheduler/app/services/scheduler/rate_task.py`：定时补评价间隔 2 秒 → 10~20 秒。
+
+**设置（数据库，不在仓库）**：`reply_delay_seconds=7`，`auto_red_flower=0`，商品特殊说明统一为全国包邮。
+
+**运维**：新增 `ops/daily-check.sh` 每日只读检查；服务器 `vm.swappiness` 运行时调为 10（重启后恢复）。

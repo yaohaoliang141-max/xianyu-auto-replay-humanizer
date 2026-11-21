@@ -1,0 +1,30 @@
+{
+  "environment": {
+    "MYSQL_HOST": "",
+    "MYSQL_PORT": "",
+    "MYSQL_USER": "",
+    "MYSQL_PASSWORD": "",
+    "MYSQL_DATABASE": "",
+    "REDIS_HOST": "",
+    "REDIS_PORT": "",
+    "REDIS_PASSWORD": "",
+    "HOST": "",
+    "ENVIRONMENT": "",
+    "SQL_ECHO": "",
+    "LOG_LEVEL": "",
+    "STATIC_DIR": "",
+    "BACKUP_DIR": "",
+    "WEBSOCKET_SERVICE_URL": "",
+    "SCHEDULER_SERVICE_URL": "",
+    "BACKEND_WEB_SERVICE_URL": "",
+    "CORS_ORIGINS": "",
+    "AUTO_START_CRAWL_JOBS": "",
+    "ENABLE_REMOTE_ADS": "",
+    "ENABLE_REMOTE_ANNOUNCEMENTS": "",
+    "ENABLE_REMOTE_POPUP_ANNOUNCEMENTS": "",
+    "BROWSER_HEADLESS": "",
+    "PLAYWRIGHT_BROWSERS_PATH": "",
+    "TZ": "",
+    "MAX_CAPTCHA_CONCURRENT": ""
+  }
+}

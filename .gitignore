@@ -1,0 +1,24 @@
+# secrets & runtime data — never commit
+infra.env
+runtime-settings.json
+data/
+migration/
+reports/
+local-history/
+*.sql
+*.sql.gz
+*.tar.gz
+*.tgz
+**/browser_data/
+**/logs/
+**/backups/
+**/static/uploads/
+.env
+**/.env.local
+
+# build output / deps
+node_modules/
+dist/
+__pycache__/
+*.pyc
+*.egg-info/

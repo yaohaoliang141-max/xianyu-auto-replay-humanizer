@@ -1,0 +1,188 @@
+name: xianyu-ecs
+
+x-runtime: &runtime
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+x-app-env: &app-env
+  ENVIRONMENT: production
+  HOST: 0.0.0.0
+  MYSQL_HOST: mysql
+  MYSQL_PORT: "3306"
+  MYSQL_DATABASE: "${MYSQL_DATABASE:-xianyu_data}"
+  MYSQL_USER: "${MYSQL_USER:-xianyu}"
+  MYSQL_PASSWORD: "${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in infra.env}"
+  DB_POOL_SIZE: "5"
+  DB_MAX_OVERFLOW: "3"
+  DB_POOL_TIMEOUT: "30"
+  DB_POOL_RECYCLE: "1800"
+  DB_POOL_PRE_PING: "true"
+  DB_POOL_USE_LIFO: "true"
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in infra.env}"
+  REDIS_POOL_SIZE: "20"
+  BACKEND_WEB_PORT: "8089"
+  WEBSOCKET_PORT: "8090"
+  SCHEDULER_PORT: "8091"
+  BACKEND_WEB_SERVICE_URL: http://backend-web:8089
+  WEBSOCKET_SERVICE_URL: http://websocket:8090
+  SCHEDULER_SERVICE_URL: http://scheduler:8091
+  STATIC_DIR: /app/static
+  BACKUP_DIR: /app/backups
+  MAX_CAPTCHA_CONCURRENT: "1"
+  BROWSER_HEADLESS: "true"
+  CAPTCHA_DRISSIONPAGE_HEADLESS: "true"
+  PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+  SQL_ECHO: "false"
+  TZ: Asia/Shanghai
+
+x-app: &app
+  <<: *runtime
+  image: xianyu-local:ecs-20261116
+  init: true
+  shm_size: 128mb
+  stop_grace_period: 60s
+  environment: *app-env
+
+x-app-health: &app-health
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 90s
+
+services:
+  mysql:
+    <<: *runtime
+    image: "${MYSQL_IMAGE:-mysql:8.0.46}"
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in infra.env}"
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-xianyu_data}"
+      MYSQL_USER: "${MYSQL_USER:-xianyu}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in infra.env}"
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      - --innodb-buffer-pool-size=128M
+      - --max-connections=64
+      - --max-allowed-packet=256M
+    volumes:
+      - ../data/mysql:/var/lib/mysql
+    stop_grace_period: 90s
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql --host=127.0.0.1 --user="$$MYSQL_USER" --database="$$MYSQL_DATABASE" --batch --silent --execute="SELECT 1" >/dev/null']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  redis:
+    <<: *runtime
+    image: "${REDIS_IMAGE:-redis:8.4-alpine}"
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in infra.env}"
+      TZ: Asia/Shanghai
+    command: [sh, -ec, 'exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 96mb --maxmemory-policy allkeys-lru --appendonly yes']
+    volumes:
+      - ../data/redis:/data
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -qx PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  backend-web:
+    <<: *app
+    build:
+      context: ..
+      dockerfile: scripts/Dockerfile
+      args:
+        PYTHON_IMAGE: "${PYTHON_IMAGE:-python:3.12.13-slim-bookworm}"
+    command: [backend-web]
+    volumes:
+      - ../runtime-settings.json:/run/xianyu/runtime-settings.json:ro
+      - ../data/static:/app/static
+      - ../data/backups:/app/backups
+      - ../data/browser-backend:/app/backend-web/browser_data
+      - ../data/logs/backend-web:/app/backend-web/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *app-health
+      test: [CMD, python, /app/cloud_health.py, "8089"]
+
+  websocket:
+    <<: *app
+    image: xianyu-local:signed-status-20261121
+    environment:
+      <<: *app-env
+      PAID_ACK_ENABLED_AT: "1794862147"
+    profiles: [live]
+    command: [websocket]
+    volumes:
+      - ../runtime-settings.json:/run/xianyu/runtime-settings.json:ro
+      - ../data/static:/app/static
+      - ../data/backups:/app/backups
+      - ../data/browser-websocket:/app/websocket/browser_data
+      - ../data/logs/websocket:/app/websocket/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend-web:
+        condition: service_healthy
+    healthcheck:
+      <<: *app-health
+      test: [CMD, python, /app/cloud_health.py, "8090"]
+
+  scheduler:
+    <<: *app
+    image: xianyu-local:rate-gap-sched-20261121
+    profiles: [live]
+    command: [scheduler]
+    volumes:
+      - ../runtime-settings.json:/run/xianyu/runtime-settings.json:ro
+      - ../data/static:/app/static
+      - ../data/backups:/app/backups
+      - ../data/browser-scheduler:/app/scheduler/browser_data
+      - ../data/logs/scheduler:/app/scheduler/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend-web:
+        condition: service_healthy
+      websocket:
+        condition: service_healthy
+    healthcheck:
+      <<: *app-health
+      test: [CMD, python, /app/cloud_health.py, "8091"]
+
+  frontend:
+    <<: *runtime
+    image: "${NGINX_IMAGE:-nginx:alpine}"
+    ports:
+      - 127.0.0.1:9000:80
+    volumes:
+      - ../app/frontend/dist:/usr/share/nginx/html:ro
+      - ../app/docker/frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend-web:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q --spider http://127.0.0.1/']
+      interval: 30s
+      timeout: 5s
+      retries: 3
