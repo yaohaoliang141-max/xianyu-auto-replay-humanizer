@@ -123,7 +123,7 @@ services:
 
   websocket:
     <<: *app
-    image: xianyu-local:price-no-number-20261121
+    image: xianyu-local:handmade-by-desc-20261122
     environment:
       <<: *app-env
       PAID_ACK_ENABLED_AT: "1794862147"

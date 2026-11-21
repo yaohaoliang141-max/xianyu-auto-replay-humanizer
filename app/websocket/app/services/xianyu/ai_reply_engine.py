@@ -41,8 +41,9 @@ from common.services.ai_provider_service import (
 )
 
 
-# 店主确认的手绘商品（2026-11-21）：鸢尾花、盛开的杏花、莫奈·塞纳河晨光。其他商品一律按打印款回答。
-HANDMADE_ITEM_IDS = {"1101310800898", "1099749695936", "1100227797327"}
+# 店主要求（2026-11-22）：手绘与否按商品标题+简介判断，写了“手绘”就是手绘（“非手绘/不是手绘”除外）。
+_NOT_HANDMADE_RE = re.compile(r"(非|不是|并非|不是纯|非纯)手绘")
+_UNKNOWN_TITLES = {"商品信息获取失败", "未知商品", "未知", ""}
 
 class AIReplyEngine:
     """AI回复引擎
@@ -749,6 +750,16 @@ class AIReplyEngine:
             return "具体以商品详情和平台规则为准。"
         return reply
 
+    def _made_label(self, item_info: Dict[str, Any]) -> str:
+        title = str(item_info.get("title") or "").strip()
+        desc = str(item_info.get("desc") or "")
+        if title in _UNKNOWN_TITLES:
+            return "不确定（读不到这幅画的资料，问手绘还是微喷时回答「这个我确认一下哦」）"
+        text = f"{title}\n{desc}"
+        if "手绘" in text and not _NOT_HANDMADE_RE.search(text):
+            return "手绘款"
+        return "高清艺术微喷款"
+
     async def _lookup_order_status(self, chat_id: str, item_id: str, db_session: AsyncSession) -> str:
         # 店主要求（2026-11-21）：AI按订单状态回答发货/售后问题；“已签收”来自闲鱼“订单已签收”卡片
         try:
@@ -973,9 +984,7 @@ class AIReplyEngine:
                 # 店主要求（2026-11-21）：有平台活动，标价不一定是实付价，不把价格数字给AI
                 item_desc += "商品价格: 以买家下单页面显示为准（回复里不要报任何价格数字）\n"
                 item_desc += f"商品描述: {self._extract_readable_item_desc(item_info.get('desc'))}"
-                # 手绘/打印由程序按店主确认的手绘商品名单判断
-                _is_handmade = str(item_id) in HANDMADE_ITEM_IDS
-                item_desc += "\n制作方式: " + ("手绘款" if _is_handmade else "高清艺术微喷款")
+                item_desc += "\n制作方式: " + self._made_label(item_info)
                 item_desc += "\n订单状态: " + await self._lookup_order_status(chat_id, item_id, db_session)
                 
                 # 添加商品AI提示词
