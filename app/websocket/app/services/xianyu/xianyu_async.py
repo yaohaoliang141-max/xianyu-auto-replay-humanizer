@@ -1704,6 +1704,9 @@ class XianyuAsync:
                 logger.warning(f"[{msg_time}] 【{self.cookie_id}】评价消息无法提取订单ID，跳过自动评价")
                 return
             
+            # 店主要求（2026-11-22）：不再即时评价，改为每天20:00由定时评价任务统一一条一条评价（间隔20秒）
+            logger.info(f"[{msg_time}] 【{self.cookie_id}】订单 {order_id} 收到评价请求，等待每天20:00统一评价")
+            return
             # 获取评价内容配置
             from app.services.xianyu.rate_service import RateService, update_order_rated_status, get_rate_feedback_content
             

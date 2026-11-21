@@ -85,6 +85,13 @@ def cleanup_expired_cooldowns() -> None:
         logger.debug(f"[定时补评价] 清理了 {len(expired_orders)} 个过期的冷却记录")
 
 
+# 店主要求（2026-11-22）：每天20点跑一次，评价最近14天已发货/已完成且未评价的订单，一条一条、间隔20秒
+DAILY_RATE_HOUR = 20
+RATE_LOOKBACK_DAYS = 14
+RATE_GAP_SECONDS = 20
+_LAST_DAILY_RUN_DATE = None
+
+
 class RateTask:
     """定时补评价任务"""
     
@@ -102,7 +109,12 @@ class RateTask:
             批次ID
         """
         batch_id = str(uuid.uuid4())
-        logger.debug(f"[定时补评价] 开始执行，批次ID: {batch_id}")
+        global _LAST_DAILY_RUN_DATE
+        _now = get_beijing_now_naive()
+        if _now.hour != DAILY_RATE_HOUR or _LAST_DAILY_RUN_DATE == _now.date():
+            return batch_id
+        _LAST_DAILY_RUN_DATE = _now.date()
+        logger.info(f"[定时评价] 每日{DAILY_RATE_HOUR}点批量评价开始，批次ID: {batch_id}")
         
         # 清理过期的冷却记录
         cleanup_expired_cooldowns()
@@ -176,7 +188,7 @@ class RateTask:
         """
         # 获取今天的开始时间（北京时间）
         now = get_beijing_now_naive()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start = (now - timedelta(days=RATE_LOOKBACK_DAYS)).replace(hour=0, minute=0, second=0, microsecond=0)
         
         stmt = select(XYOrder).where(
             XYOrder.account_id == account_id,
@@ -253,7 +265,7 @@ class RateTask:
                 )
                 
                 # 订单处理间隔
-                await asyncio.sleep(random.uniform(10, 20))  # 店主要求：评价间隔随机10~20秒
+                await asyncio.sleep(RATE_GAP_SECONDS)  # 店主要求：一条一条评价，间隔20秒
                 
             except Exception as e:
                 error_msg = str(e)
