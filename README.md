@@ -14,6 +14,7 @@
 | `scripts/` | 部署文件：`compose.yaml`、`Dockerfile`、`cloud_entry.py`、`cloud_health.py` |
 | `prompts/ai-reply-prompt.txt` | 当前线上使用的 AI 回复提示词（三类意图共用同一份） |
 | `ops/daily-check.sh` | 每日只读风控/健康检查脚本 |
+| `ops/publish.ps1`、`ops/export-from-server.sh` | 从服务器导出当前线上代码（自动做密钥扫描，发现密钥就拒绝）并同步到本仓库 |
 | `infra.env.example`、`runtime-settings.example.json` | 配置模板（只有字段，没有任何密码） |
 | `CHANGES.md` | 每次改动记录 |
 
