@@ -123,7 +123,7 @@ services:
 
   websocket:
     <<: *app
-    image: xianyu-local:refund-ack-ws-20261124
+    image: xianyu-local:noreply-abuse-ws-20261124
     environment:
       <<: *app-env
       PAID_ACK_ENABLED_AT: "1794862147"

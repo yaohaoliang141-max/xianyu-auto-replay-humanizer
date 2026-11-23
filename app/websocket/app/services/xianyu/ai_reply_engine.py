@@ -800,7 +800,9 @@ class AIReplyEngine:
                 stmt = stmt.where(XYOrder.item_id == str(item_id))
             order = (await db_session.execute(stmt.order_by(XYOrder.id.desc()).limit(1))).scalars().first()
             if not order:
-                return "没有订单（买家还没拍下）"
+                # 店主要求（2026-11-24）：没下单的人一上来就骂或贬低，不回复
+                return ("没有订单（买家还没拍下）。如果买家一上来（对话历史里还没聊过）就骂人，或只是说画难看、垃圾、不好这类贬低的话、"
+                        "并不是在问问题，就只输出 NO_REPLY 这几个字母，别的什么都不写；正常提问（包括质疑是不是手绘、问质量）照常回答")
             meta = order.metadata_json or {}
             if order.status == "shipped" and meta.get("signed_at"):
                 return "已签收（买家已收到货）" + _SIGNED_RULE
@@ -1088,6 +1090,9 @@ class AIReplyEngine:
                 else:
                     reply = await self._call_openai_api(settings, messages)
                 
+                if reply and "NO_REPLY" in str(reply).upper():
+                    logger.info(f"【{cookie_id}】未下单买家开场就骂/贬低，按店主要求不回复: {str(message)[:50]}")
+                    return "EMPTY_REPLY"
                 if reply:
                     # 店主要求（2026-11-23）：签收/确认收货后若回复被拦截，直接发退货话术
                     if not fixed_reply:
