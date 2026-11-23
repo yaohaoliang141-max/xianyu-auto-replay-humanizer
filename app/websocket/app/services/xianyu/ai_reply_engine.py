@@ -58,21 +58,27 @@ _SIGNED_APOLOGY = "真的非常非常抱歉，让您不满意了，是我们没�
 _SIGNED_COMPLAINT_REPLY = ("真的非常非常抱歉，让您不满意了，是我们没做好🙏######" + _SIGNED_RETURN_REPLY +
                            "######您现在可以申请退货退款，我12小时内会同意的######真的实在不好意思######这边非常抱歉影响您的心情了🙏")
 # 店主要求（2026-11-23）：签收/确认收货后不再谈手绘、微喷等商品性质；夸就感谢，骂就诚恳道歉并引导退货
-_SIGNED_RULE = ("——售后阶段：已发货，不能换款；不要再说手绘、微喷、工艺、材质等商品性质，不解释、不争辩。"
+_SIGNED_FRIENDLY_REPLY = "宝贝收到就好～挂起来很好看的😊"
+# 店主要求（2026-11-24）：是否不满意由AI按意思判断并输出标记，程序据此发道歉多条；平和提问不发道歉
+_SIGNED_RULE = ("——售后阶段：已发货，不能换款；不要说手绘、微喷、工艺、材质等商品性质，也不要说「不再讨论」这类话，不解释、不争辩。"
                 "买家夸奖或满意：只真诚感谢（例如「谢谢宝贝喜欢～挂起来一定很好看，有空常来逛逛😊」）。"
-                "买家只要表达不满意（嫌不好、质疑、骂人都算）：先非常诚恳地道歉（例如「真的非常抱歉，给您添麻烦了🙏」），"
-                "再回复：" + _SIGNED_RETURN_REPLY)
+                "买家平和地问商品性质（是不是手绘、什么材质、怎么做的）：只回「" + _SIGNED_FRIENDLY_REPLY + "」。"
+                "其他正常问题（比如怎么挂）：简短正常回答。"
+                "买家表达不满意（嫌不好、觉得货不对板、生气、骂人都算，按意思判断，不看关键词）：只输出 [不满意] 这几个字，"
+                "别的什么都不写，程序会自动发道歉和退货话术。")
 _PRODUCT_TALK_RE = re.compile(r"手绘|微喷|画室|手工|打印|印刷|工艺|材质|颜料|油画布")
 
 
 def _strip_product_talk(reply: str) -> str:
-    """签收后的安全网：去掉谈商品性质的句子；全被去掉就发退货话术。"""
-    parts = re.split(r"(?<=[。！!？?～~])", str(reply or ""))
-    kept = "".join(x for x in parts if not _PRODUCT_TALK_RE.search(x)).strip()
-    # AI已判断买家不满意（回复里引导了退货/退款）→ 统一成：诚恳道歉 + 店主的退货话术
-    if not kept or re.search(r"退货|退款|运费险", kept):
+    """签收后：AI标记[不满意] → 道歉多条；否则去掉谈商品性质的句子，全被去掉就发一句客气话。"""
+    text = str(reply or "")
+    if "######" in text:  # 已经是程序给的固定多条回复（例如拦截后的兜底）
+        return text
+    if "不满意]" in text or "[不满意" in text:
         return _SIGNED_COMPLAINT_REPLY
-    return kept
+    parts = re.split(r"(?<=[。！!？?～~])", text)
+    kept = "".join(x for x in parts if not _PRODUCT_TALK_RE.search(x)).strip()
+    return kept or _SIGNED_FRIENDLY_REPLY
 
 class AIReplyEngine:
     """AI回复引擎
