@@ -748,7 +748,17 @@ class AIReplyEngine:
                     AIChatMessage.chat_id.in_({normalized, normalized + "@goofish", str(chat_id)}),
                     AIChatMessage.role == "assistant",
                 ))
-                return (result.scalar() or 0) >= 7
+                count = result.scalar() or 0
+                # 店主要求（2026-11-24）：还没下单的会话最多回复4次；已经下单的不限次数
+                if count >= 4:
+                    from common.models.xy_order import XYOrder
+                    order_id = (await session.execute(
+                        select(XYOrder.id).where(
+                            XYOrder.chat_id.in_({normalized, normalized + "@goofish", str(chat_id)})
+                        ).limit(1)
+                    )).scalar()
+                    return order_id is None
+                return False
         except Exception:
             logger.warning("AI reply budget unavailable; suppressing automatic reply")
             return True
@@ -807,8 +817,10 @@ class AIReplyEngine:
             if order.status == "shipped" and meta.get("signed_at"):
                 return "已签收（买家已收到货）" + _SIGNED_RULE
             return {
-                "pending_ship": "已付款，待发货（还没发货，可以换款）",
-                "shipped": "已发货（运输中；已发货，不能换款）",
+                "pending_ship": ("已付款，待发货（还没发货，可以换款。买家催发货、问什么时候发：先诚恳道歉，"
+                                 "例如「真的不好意思让您久等了🙏」，再说已经预约好快递小哥了，他会来取件）"),
+                "shipped": ("已发货（运输中；已发货，不能换款。买家催发货、问怎么还没到：先诚恳道歉，"
+                            "例如「真的不好意思让您久等了🙏」，再说已经发出了哦，闲鱼订单里可以看物流～）"),
                 "completed": "买家已确认收货（交易完成）" + _SIGNED_RULE,
                 "refunding": ("退款中（买家已申请退货/退款；问什么时候处理、什么时候同意：回复「我这边现在在忙，"
                               "12小时内会处理的，不好意思哈🙏」；不要再谈手绘、微喷等商品性质）"),
