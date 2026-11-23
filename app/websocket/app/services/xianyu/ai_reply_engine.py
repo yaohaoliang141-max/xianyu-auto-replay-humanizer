@@ -46,6 +46,12 @@ _NOT_HANDMADE_RE = re.compile(r"(非|不是|并非|不是纯|非纯)手绘")
 _UNKNOWN_TITLES = {"商品信息获取失败", "未知商品", "未知", ""}
 
 _SIGNED_RETURN_REPLY = "您好，我们有运费险，这边您可以直接退货，运费平台也会赔付给您，辛苦了～"
+# 店主要求（2026-11-24）：买家发起退货/退款时固定回复（不调用AI）
+_REFUND_CARD_REPLY = {
+    "[我发起了退货退款申请]": "收到啦～我这边现在在忙，12小时内会同意退货的，不好意思哈🙏",
+    "[我发起了退款申请]": "收到啦～我这边现在在忙，12小时内会处理的，不好意思哈🙏",
+    "[我修改了退款申请]": "收到啦～我这边现在在忙，12小时内会处理的，不好意思哈🙏",
+}
 _SIGNED_APOLOGY = "真的非常非常抱歉，让您不满意了，是我们没做好🙏 "
 # 店主要求（2026-11-23）：签收/确认收货后不再谈手绘、微喷等商品性质；夸就感谢，骂就诚恳道歉并引导退货
 _SIGNED_RULE = ("——售后阶段：已发货，不能换款；不要再说手绘、微喷、工艺、材质等商品性质，不解释、不争辩。"
@@ -802,7 +808,8 @@ class AIReplyEngine:
                 "pending_ship": "已付款，待发货（还没发货，可以换款）",
                 "shipped": "已发货（运输中；已发货，不能换款）",
                 "completed": "买家已确认收货（交易完成）" + _SIGNED_RULE,
-                "refunding": "退款中",
+                "refunding": ("退款中（买家已申请退货/退款；问什么时候处理、什么时候同意：回复「我这边现在在忙，"
+                              "12小时内会处理的，不好意思哈🙏」；不要再谈手绘、微喷等商品性质）"),
                 "refunded": "已退款",
                 "cancelled": "已取消",
             }.get(order.status, str(order.status))
@@ -1049,6 +1056,10 @@ class AIReplyEngine:
                 
                 # 调用AI生成回复
                 reply = None
+                fixed_reply = _REFUND_CARD_REPLY.get(str(message or "").strip())
+                if fixed_reply:
+                    reply = fixed_reply
+                    logger.info(f"【{cookie_id}】退货/退款申请卡片，使用固定回复")
                 
                 # 检查API Key是否配置（必须是非空字符串）
                 api_key = (settings.get("api_key") or "").strip()
@@ -1066,7 +1077,9 @@ class AIReplyEngine:
                     settings.get("model_name"),
                 )
                 logger.info(f"【{cookie_id}】使用{provider_name} API生成回复 (provider_type={provider_type})")
-                if provider_type == "dashscope_app":
+                if fixed_reply:
+                    pass
+                elif provider_type == "dashscope_app":
                     reply = await self._call_dashscope_api(settings, messages)
                 elif provider_type == "gemini":
                     reply = await self._call_gemini_api(settings, messages)
@@ -1077,10 +1090,11 @@ class AIReplyEngine:
                 
                 if reply:
                     # 店主要求（2026-11-23）：签收/确认收货后若回复被拦截，直接发退货话术
-                    reply = self._guard_seller_reply(reply, _SIGNED_RETURN_REPLY if signed_now else None)
-                    reply = self._soften_handmade_words(reply)
-                    if signed_now:
-                        reply = _strip_product_talk(reply)
+                    if not fixed_reply:
+                        reply = self._guard_seller_reply(reply, _SIGNED_RETURN_REPLY if signed_now else None)
+                        reply = self._soften_handmade_words(reply)
+                        if signed_now:
+                            reply = _strip_product_talk(reply)
                     # 二次检测：大模型返回后，若人工已介入暂停，则放弃本次回复
                     if (
                         pause_manager.is_chat_paused(chat_id, cookie_id)

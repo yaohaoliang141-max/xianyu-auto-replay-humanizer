@@ -485,7 +485,7 @@ class RateTask:
             # 2) 发送消息内容（等待服务端结果，识别安全拦截）
             send_url = f"{base_url}/internal/accounts/{order.account_id}/send-message"
             send_res = await http_client.post(
-                send_url, json={"chat_id": chat_id, "message": content, "wait_result": True}
+                send_url, json={"chat_id": chat_id, "to_user_id": str(order.buyer_id), "message": content, "wait_result": True}
             )
             if not isinstance(send_res, dict) or not send_res.get("success"):
                 msg = send_res.get("message") if isinstance(send_res, dict) else send_res
