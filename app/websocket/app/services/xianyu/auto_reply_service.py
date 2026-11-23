@@ -1056,9 +1056,9 @@ class AutoReplyService:
                 send_results.append(result or self._build_empty_send_result("text", msg))
                 logger.info(f"【{self.cookie_id}】发送文本回复 {i+1}/{len(messages)}: {msg[:50]}...")
                  
-                # 多条消息之间添加短暂延迟
+                # 多条消息之间隔2~4秒，像真人一条条打字（店主要求 2026-11-24）
                 if i < len(messages) - 1:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(random.uniform(2, 4))
         else:
             # 单条消息直接发送
             result = await self.xianyu_instance.send_msg(

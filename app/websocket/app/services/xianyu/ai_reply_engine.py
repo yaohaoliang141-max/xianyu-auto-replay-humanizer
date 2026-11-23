@@ -48,11 +48,15 @@ _UNKNOWN_TITLES = {"商品信息获取失败", "未知商品", "未知", ""}
 _SIGNED_RETURN_REPLY = "您好，我们有运费险，这边您可以直接退货，运费平台也会赔付给您，辛苦了～"
 # 店主要求（2026-11-24）：买家发起退货/退款时固定回复（不调用AI）
 _REFUND_CARD_REPLY = {
-    "[我发起了退货退款申请]": "收到啦～我这边现在在忙，12小时内会同意退货的，不好意思哈🙏",
-    "[我发起了退款申请]": "收到啦～我这边现在在忙，12小时内会处理的，不好意思哈🙏",
-    "[我修改了退款申请]": "收到啦～我这边现在在忙，12小时内会处理的，不好意思哈🙏",
+    # ###### 分隔为多条消息，依次发出（店主要求 2026-11-24：分几次发更有诚意）
+    "[我发起了退货退款申请]": "收到啦～我这边现在在忙，12小时内会同意退货的，不好意思哈🙏######真的实在不好意思######这边非常抱歉影响您的心情了🙏",
+    "[我发起了退款申请]": "收到啦～我这边现在在忙，12小时内会处理的，不好意思哈🙏######真的实在不好意思######这边非常抱歉影响您的心情了🙏",
+    "[我修改了退款申请]": "收到啦～我这边现在在忙，12小时内会处理的，不好意思哈🙏######真的实在不好意思######这边非常抱歉影响您的心情了🙏",
 }
 _SIGNED_APOLOGY = "真的非常非常抱歉，让您不满意了，是我们没做好🙏 "
+# 签收后不满意：道歉 + 退货话术 + 跟进几句，分多条发
+_SIGNED_COMPLAINT_REPLY = ("真的非常非常抱歉，让您不满意了，是我们没做好🙏######" + _SIGNED_RETURN_REPLY +
+                           "######您现在可以申请退货退款，我12小时内会同意的######真的实在不好意思######这边非常抱歉影响您的心情了🙏")
 # 店主要求（2026-11-23）：签收/确认收货后不再谈手绘、微喷等商品性质；夸就感谢，骂就诚恳道歉并引导退货
 _SIGNED_RULE = ("——售后阶段：已发货，不能换款；不要再说手绘、微喷、工艺、材质等商品性质，不解释、不争辩。"
                 "买家夸奖或满意：只真诚感谢（例如「谢谢宝贝喜欢～挂起来一定很好看，有空常来逛逛😊」）。"
@@ -67,7 +71,7 @@ def _strip_product_talk(reply: str) -> str:
     kept = "".join(x for x in parts if not _PRODUCT_TALK_RE.search(x)).strip()
     # AI已判断买家不满意（回复里引导了退货/退款）→ 统一成：诚恳道歉 + 店主的退货话术
     if not kept or re.search(r"退货|退款|运费险", kept):
-        return _SIGNED_APOLOGY + _SIGNED_RETURN_REPLY
+        return _SIGNED_COMPLAINT_REPLY
     return kept
 
 class AIReplyEngine:
@@ -1109,7 +1113,7 @@ class AIReplyEngine:
                 if reply:
                     # 店主要求（2026-11-23）：签收/确认收货后若回复被拦截，直接发退货话术
                     if not fixed_reply:
-                        reply = self._guard_seller_reply(reply, _SIGNED_RETURN_REPLY if signed_now else None)
+                        reply = self._guard_seller_reply(reply, _SIGNED_COMPLAINT_REPLY if signed_now else None)
                         reply = self._soften_handmade_words(reply)
                         if signed_now:
                             reply = _strip_product_talk(reply)
