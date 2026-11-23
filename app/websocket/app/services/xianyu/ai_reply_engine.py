@@ -45,6 +45,25 @@ from common.services.ai_provider_service import (
 _NOT_HANDMADE_RE = re.compile(r"(非|不是|并非|不是纯|非纯)手绘")
 _UNKNOWN_TITLES = {"商品信息获取失败", "未知商品", "未知", ""}
 
+_SIGNED_RETURN_REPLY = "您好，我们有运费险，这边您可以直接退货，运费平台也会赔付给您，辛苦了～"
+_SIGNED_APOLOGY = "真的非常非常抱歉，让您不满意了，是我们没做好🙏 "
+# 店主要求（2026-11-23）：签收/确认收货后不再谈手绘、微喷等商品性质；夸就感谢，骂就诚恳道歉并引导退货
+_SIGNED_RULE = ("——售后阶段：已发货，不能换款；不要再说手绘、微喷、工艺、材质等商品性质，不解释、不争辩。"
+                "买家夸奖或满意：只真诚感谢（例如「谢谢宝贝喜欢～挂起来一定很好看，有空常来逛逛😊」）。"
+                "买家只要表达不满意（嫌不好、质疑、骂人都算）：先非常诚恳地道歉（例如「真的非常抱歉，给您添麻烦了🙏」），"
+                "再回复：" + _SIGNED_RETURN_REPLY)
+_PRODUCT_TALK_RE = re.compile(r"手绘|微喷|画室|手工|打印|印刷|工艺|材质|颜料|油画布")
+
+
+def _strip_product_talk(reply: str) -> str:
+    """签收后的安全网：去掉谈商品性质的句子；全被去掉就发退货话术。"""
+    parts = re.split(r"(?<=[。！!？?～~])", str(reply or ""))
+    kept = "".join(x for x in parts if not _PRODUCT_TALK_RE.search(x)).strip()
+    # AI已判断买家不满意（回复里引导了退货/退款）→ 统一成：诚恳道歉 + 店主的退货话术
+    if not kept or re.search(r"退货|退款|运费险", kept):
+        return _SIGNED_APOLOGY + _SIGNED_RETURN_REPLY
+    return kept
+
 class AIReplyEngine:
     """AI回复引擎
     
@@ -728,11 +747,14 @@ class AIReplyEngine:
             logger.warning("AI reply budget unavailable; suppressing automatic reply")
             return True
 
-    def _guard_seller_reply(self, reply: str) -> str:
+    def _guard_seller_reply(self, reply: str, fallback: Optional[str] = None) -> str:
         # Fail closed on financial-pledge phrases; normal shipping/insurance policy stays allowed.
         compact = re.sub(r"[\s，,。.!！?？、：:；;]", "", str(reply or ""))
         compact = re.sub(r"(?:退货运费)?按(?:平台规则|保单|订单保障)(?:审核)?赔付", "", compact)
         compact = re.sub(r"运费平台(?:也)?会赔付给[你您]", "", compact)  # 店主确认的退货话术
+        # 退货话术的常见变体（2026-11-23）：运费(险/由平台)会赔付(给您)、平台/运费险会赔付运费
+        compact = re.sub(r"运费(?:险|平台)?(?:也)?(?:会)?(?:由平台|由运费险)?(?:也)?(?:会)?赔付(?:给[你您])?", "", compact)
+        compact = re.sub(r"(?:平台|运费险)(?:也)?会赔付(?:运费)?(?:给[你您])?", "", compact)
         forbidden = (
             r"赔|罚|担保|保证|补寄|包换|退钱|"
             r"(?:我|我们|这边).{0,6}(?:承担|支付|[出付包].{0,4}(?:费|钱))|"
@@ -746,8 +768,8 @@ class AIReplyEngine:
             r"额外.{0,4}[送赠]|(?:给|为|会|帮).{0,5}[你您].{0,3}(?:退款|退钱)"
         )
         if re.search(forbidden, compact):
-            logger.warning("Blocked financial commitment in generated seller reply")
-            return "具体以商品详情和平台规则为准。"
+            logger.warning(f"Blocked financial commitment in generated seller reply: {str(reply)[:200]}")
+            return fallback or "具体以商品详情和平台规则为准。"
         return reply
 
     def _made_label(self, item_info: Dict[str, Any]) -> str:
@@ -775,13 +797,11 @@ class AIReplyEngine:
                 return "没有订单（买家还没拍下）"
             meta = order.metadata_json or {}
             if order.status == "shipped" and meta.get("signed_at"):
-                return ("已签收（买家已收到货；已发货，不能换款；买家只要表达不满意，"
-                        "就回复：您好，我们有运费险，这边您可以直接退货，运费平台也会赔付给您，辛苦了～）")
+                return "已签收（买家已收到货）" + _SIGNED_RULE
             return {
                 "pending_ship": "已付款，待发货（还没发货，可以换款）",
                 "shipped": "已发货（运输中；已发货，不能换款）",
-                "completed": ("买家已确认收货（交易完成；已发货，不能换款；买家只要表达不满意，"
-                              "就回复：您好，我们有运费险，这边您可以直接退货，运费平台也会赔付给您，辛苦了～）"),
+                "completed": "买家已确认收货（交易完成）" + _SIGNED_RULE,
                 "refunding": "退款中",
                 "refunded": "已退款",
                 "cancelled": "已取消",
@@ -984,8 +1004,10 @@ class AIReplyEngine:
                 # 店主要求（2026-11-21）：有平台活动，标价不一定是实付价，不把价格数字给AI
                 item_desc += "商品价格: 以买家下单页面显示为准（回复里不要报任何价格数字）\n"
                 item_desc += f"商品描述: {self._extract_readable_item_desc(item_info.get('desc'))}"
-                item_desc += "\n制作方式: " + self._made_label(item_info)
-                item_desc += "\n订单状态: " + await self._lookup_order_status(chat_id, item_id, db_session)
+                order_status_text = await self._lookup_order_status(chat_id, item_id, db_session)
+                signed_now = "售后阶段" in order_status_text
+                item_desc += "\n制作方式: " + ("（买家已收货，不再谈手绘、微喷等商品性质）" if signed_now else self._made_label(item_info))
+                item_desc += "\n订单状态: " + order_status_text
                 
                 # 添加商品AI提示词
                 ai_prompt = item_info.get('ai_prompt', '')
@@ -1054,8 +1076,11 @@ class AIReplyEngine:
                     reply = await self._call_openai_api(settings, messages)
                 
                 if reply:
-                    reply = self._guard_seller_reply(reply)
+                    # 店主要求（2026-11-23）：签收/确认收货后若回复被拦截，直接发退货话术
+                    reply = self._guard_seller_reply(reply, _SIGNED_RETURN_REPLY if signed_now else None)
                     reply = self._soften_handmade_words(reply)
+                    if signed_now:
+                        reply = _strip_product_talk(reply)
                     # 二次检测：大模型返回后，若人工已介入暂停，则放弃本次回复
                     if (
                         pause_manager.is_chat_paused(chat_id, cookie_id)
