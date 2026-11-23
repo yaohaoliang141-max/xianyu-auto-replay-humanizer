@@ -891,7 +891,8 @@ class AIReplyEngine:
             chat_lock = await self._get_chat_lock(f"{cookie_id}:{str(chat_id).split('@')[0]}")
             
             async with chat_lock:
-                if await self.has_reached_reply_limit(cookie_id, chat_id):
+                # 店主要求（2026-11-24）：退货/退款申请卡片不受7次回复上限限制
+                if str(message or "").strip() not in _REFUND_CARD_REPLY and await self.has_reached_reply_limit(cookie_id, chat_id):
                     return "EMPTY_REPLY"
                 # 获取最近消息，检查是否有更新的消息
                 query_seconds = 6 if skip_wait else 25

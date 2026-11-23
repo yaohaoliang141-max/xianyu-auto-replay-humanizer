@@ -1224,8 +1224,10 @@ class AutoReplyService:
                     reply_trace.setdefault("context_snapshot", {})["pause_remaining_seconds"] = remaining
                 return None
             
-            from app.services.xianyu.ai_reply_engine import get_ai_reply_engine
-            if await get_ai_reply_engine().has_reached_reply_limit(self.cookie_id, chat_id):
+            from app.services.xianyu.ai_reply_engine import get_ai_reply_engine, _REFUND_CARD_REPLY
+            # 店主要求（2026-11-24）：退货/退款申请卡片不受7次回复上限限制
+            if (str(send_message or "").strip() not in _REFUND_CARD_REPLY
+                    and await get_ai_reply_engine().has_reached_reply_limit(self.cookie_id, chat_id)):
                 if reply_trace is not None:
                     reply_trace["process_status"] = "skipped"
                     reply_trace["decision_reason"] = "ai_reply_limit"
