@@ -1,5 +1,11 @@
 # 改动记录
 
+## 2026-11-25 — Prompt: sarcasm counts as a complaint; answer 假一赔十 by what the item is
+
+- Sarcastic praise after shipping (「呵呵 真是好画啊」) now counts as dissatisfaction → return script.
+- 「假一赔十吗」「保真吗」 are answered by how the painting is made (hand-painted / micro-spray), never with a vague 「以平台规则为准」; still no promise of compensation.
+- Prompt only. Rollback: `migration/prompt-edge-20261125/restore.sh`.
+
 ## 2026-11-25 — Once shipped, any complaint gets only the return script
 
 - Cause: a buyer had two orders in one chat (an unpaid duplicate that was cancelled, and the real shipped one). The AI read the newer cancelled order, thought nothing was bought, and kept arguing 「是手绘的」.
