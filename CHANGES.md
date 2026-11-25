@@ -1,5 +1,10 @@
 # 改动记录
 
+## 2026-11-26 — Daily check: order sync health; fix log ordering
+
+- `ops/daily-check.sh` now reports `order_sync_runs / order_sync_fail / order_sync_ok_last / newest_order`. If order sync stops, the AI can't recognise buyers who bought, so the risk check flags it red after 1 hour.
+- Fixed: "last" times read across two log files came out in the wrong order (needed `sort`). Token failures now also show `token_renew_fail_last`, so old, already-fixed failures don't raise a red alarm.
+
 ## 2026-11-26 — Second complaint check for buyers whose order has shipped
 
 - Code (`ai_reply_engine.py`, image `complaint-check-ws-20261126`): for shipped / signed / refunding buyers, each message is first classified by a separate AI call as 满意 / 中性 / 不满意. 不满意 → apology + return script straight away; otherwise the normal reply runs (its own `[不满意]` tag still triggers the return script). If the check fails, the normal reply runs.
