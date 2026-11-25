@@ -1,5 +1,11 @@
 # 改动记录
 
+## 2026-11-25 — Buyers who ask 假一赔十 get no reply before shipping
+
+- Prompt + code (`ai_reply_engine.py`, image `fake10-ws-20261125`): before shipping (no order, unpaid, paid-not-shipped), a buyer asking 假一赔十/假一赔N gets no reply; the AI outputs `NO_REPLY 假一赔十` and the program saves a marker in the chat, so every later message from that buyer is also ignored. Refund/return cards still get their fixed reply. After shipping it counts as dissatisfaction → apology + return script. 「保真吗」 alone is still answered by craft.
+- Shipped stage: if a reply is blocked by the money-promise guard, the return script is sent instead of a vague line.
+- Rollback: `migration/prompt-noreply-fake10-20261125/restore.sh`.
+
 ## 2026-11-25 — Prompt: sarcasm counts as a complaint; answer 假一赔十 by what the item is
 
 - Sarcastic praise after shipping (「呵呵 真是好画啊」) now counts as dissatisfaction → return script.

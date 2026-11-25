@@ -70,6 +70,9 @@ _SIGNED_RULE = ("——售后阶段：已发货，不能换款；不要说手绘
 _SHIPPED_RULE = ("——已发货阶段：买家只要表达不满意（嫌不好、说不是手绘、觉得被骗、货不对板、生气骂人都算，按意思判断，不看关键词）："
                  "只输出 [不满意] 这几个字，别的什么都不写，程序会自动发道歉和退货话术；不解释手绘、微喷、工艺，不争辩。"
                  "其他正常问题照常简短回答。")
+# 店主要求（2026-11-25）：问假一赔十的买家不做生意。AI 判断后输出「NO_REPLY 假一赔十」，程序在会话里记一笔，
+# 之后这位买家（发货前）再发什么都不回；退货/退款卡片的固定回复不受影响
+_FAKE10_MARK = "[店主规则：此买家问过假一赔十，发货前不再回复]"
 # 聊天里出现这些系统消息，就说明已经发货/签收（订单表没对上时兜底用）
 _SHIPPED_SIGNALS = ("[你已发货]", "[我已发货", "[记得及时确认收货]", "订单已签收", "确认收货")
 # 同一会话有多个订单时（例如拍了没付款又重拍），优先看真正在走流程的那一单
@@ -1094,6 +1097,14 @@ class AIReplyEngine:
                 item_desc += f"商品描述: {self._extract_readable_item_desc(item_info.get('desc'))}"
                 order_status_text = await self._lookup_order_status(chat_id, item_id, db_session)
                 signed_now = "售后阶段" in order_status_text
+                shipped_now = "已发货阶段" in order_status_text
+                if not signed_now and not shipped_now and str(message or "").strip() not in _REFUND_CARD_REPLY:
+                    fake10 = (await db_session.execute(select(AIChatMessage.id).where(
+                        AIChatMessage.chat_id == chat_id, AIChatMessage.cookie_id == cookie_id,
+                        AIChatMessage.content == _FAKE10_MARK).limit(1))).first()
+                    if fake10:
+                        logger.info(f"【{cookie_id}】买家问过假一赔十，按店主要求不回复: {str(message)[:50]}")
+                        return "EMPTY_REPLY"
                 _sizes = _find_sizes(item_info.get('title'), item_info.get('desc'))
                 if len(_sizes) == 1:
                     item_desc += f"\n商品尺寸: {_sizes[0]}（从标题/简介里找到的，买家问尺寸直接告诉他）"
@@ -1176,13 +1187,21 @@ class AIReplyEngine:
                 else:
                     reply = await self._call_openai_api(settings, messages)
                 
+                if reply and "NO_REPLY" in str(reply).upper() and "假一赔" in str(reply):
+                    if signed_now or shipped_now:
+                        # 已发货后问假一赔十 = 不满意，只发道歉+退货话术
+                        reply = _SIGNED_COMPLAINT_REPLY
+                    else:
+                        await self._save_ai_message_with_retry(cookie_id, chat_id, user_id, item_id, _FAKE10_MARK, intent)
+                        logger.info(f"【{cookie_id}】买家问假一赔十，按店主要求不回复，之后发货前也不回: {str(message)[:50]}")
+                        return "EMPTY_REPLY"
                 if reply and "NO_REPLY" in str(reply).upper():
                     logger.info(f"【{cookie_id}】未下单买家开场就骂/贬低，按店主要求不回复: {str(message)[:50]}")
                     return "EMPTY_REPLY"
                 if reply:
                     # 店主要求（2026-11-23）：签收/确认收货后若回复被拦截，直接发退货话术
                     if not fixed_reply:
-                        reply = self._guard_seller_reply(reply, _SIGNED_COMPLAINT_REPLY if signed_now else None)
+                        reply = self._guard_seller_reply(reply, _SIGNED_COMPLAINT_REPLY if (signed_now or shipped_now) else None)
                         reply = self._soften_handmade_words(reply)
                         if signed_now:
                             reply = _strip_product_talk(reply)
