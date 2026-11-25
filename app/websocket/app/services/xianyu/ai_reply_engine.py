@@ -72,13 +72,29 @@ _SIZE_RE = re.compile(
 )
 
 
+# 其他常见写法：「30cm 30cm」「30cm40cm」、乘号被吞掉的「3030cm」、只写一个边长的「尺寸：约30cm」
+_SIZE_CMCM_RE = re.compile(r"(\d{2,3})\s*(?:cm|CM|厘米|公分)\s*(\d{2,3})\s*(?:cm|CM|厘米|公分)")
+_SIZE_4DIGIT_RE = re.compile(r"(?<![\d.])(\d{2})(\d{2})\s*(?:cm|CM|厘米|公分)")
+_SIZE_SINGLE_RE = re.compile(r"(?:尺寸|大小|规格|｜)[^\d｜\n]{0,6}(\d{2,3})\s*(?:cm|CM|厘米|公分)")
+
+
 def _find_sizes(*texts):
     found = []
+    def add(v):
+        if v not in found:
+            found.append(v)
     for t in texts:
-        for a, b, _u in _SIZE_RE.findall(str(t or "")):
-            v = f"{a}×{b}cm"
-            if v not in found:
-                found.append(v)
+        t = str(t or "")
+        for a, b, _u in _SIZE_RE.findall(t):
+            add(f"{a}×{b}cm")
+        for a, b in _SIZE_CMCM_RE.findall(t):
+            add(f"{a}×{b}cm")
+        for a, b in _SIZE_4DIGIT_RE.findall(t):
+            add(f"{a}×{b}cm")
+    if not found:
+        for t in texts:
+            for a in _SIZE_SINGLE_RE.findall(str(t or "")):
+                add(f"约{a}cm（简介只写了一个边长）")
     return found
 
 

@@ -1,5 +1,12 @@
 # 改动记录
 
+## 2026-11-25 — Size: more description formats; unknown size → point to the description
+
+- Code (`ai_reply_engine.py`, image `size-desc-ws-20261125`): the size finder also reads `30cm 30cm`, `30cm40cm`, `3030cm` (lost ×) and a single side like `尺寸：约30cm`.
+- Data: the 42 items that had no description in the catalog were filled from the seller backend (read-only edit-detail API); 46 of 68 items now have a size the program can find.
+- Prompt: when neither title nor description has a size, reply 「尺寸就是简介里写的哦～」; never say it needs checking or ask the owner.
+- Rollback: `migration/size-desc-20261125/restore.sh`.
+
 ## 2026-11-25 — Size: read it from title + whole description; only one size exists
 
 - Code (`ai_reply_engine.py`, image `size-line-ws-20261125`): the size is extracted from the title and the full description (30*40, 30x40, 30×40, 30✖️40, 30乘40, with or without cm) and passed to the AI as its own line `商品尺寸: …`. The AI only says it needs to check when neither the title nor the description has a size.
