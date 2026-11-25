@@ -1,5 +1,9 @@
 # 改动记录
 
+## 2026-11-25 — Alert when the login-token service runs out of balance
+
+The scheduler's token renewal task renews the Xianyu IM token through a paid remote API. When that balance ran out (11-24 05:55), renewal failed silently; the websocket kept an expired token and stopped receiving buyer messages after its next reconnect (11-25 07:11). `ops/daily-check.sh` now reports `expired_token_in_use`, `token_balance_fail`, `token_renew_fail` and `last_buyer_msg`, and the daily risk check flags any of them in red. A websocket-side renewal fix was built and tested but not deployed (the scheduler already renews).
+
 基础：zhinianboke/xianyu-auto-reply `990f701`，2026-11-16 迁移到阿里云 ECS（Docker Compose，六个服务）。
 11-16 ~ 11-19 期间已有的定制（付款确认、一口价、发货提醒、随机延迟等）已包含在 `app/` 中。
 
