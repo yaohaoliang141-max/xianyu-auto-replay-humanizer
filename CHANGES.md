@@ -1,5 +1,12 @@
 # 改动记录
 
+## 2026-11-26 — Cleanup: remove conflicting and duplicate rules
+
+- Code (`ai_reply_engine.py`, image `cleanup-ws-20261126`): the upstream 「议价设置：最大优惠10%/100元」 block is no longer sent to the AI (it contradicted 「标价就是卖价」). The order lookup now returns an explicit stage (`none/pending/shipped/signed/refunding/refunded/cancelled`) instead of searching the status text for 「售后阶段/已发货阶段」. An unused constant was removed.
+- Prompt (4218 → 3806 chars): removed the dead refund-card rule; merged the after-shipping complaint rule into one line (output `[不满意]`, the program sends the script); fixed 「不确定就说需要确认」 and 「不要主动提退货」 contradictions; shortened the 假一赔十 and 「赔/保证」 rules.
+- Kept on purpose: the per-status shipping lines. Without them the AI made up a reason (「颜料需要晾干一天」) when asked when an order ships.
+- Rollback: `migration/cleanup-20261126/restore.sh`.
+
 ## 2026-11-26 — Daily check: order sync health; fix log ordering
 
 - `ops/daily-check.sh` now reports `order_sync_runs / order_sync_fail / order_sync_ok_last / newest_order`. If order sync stops, the AI can't recognise buyers who bought, so the risk check flags it red after 1 hour.

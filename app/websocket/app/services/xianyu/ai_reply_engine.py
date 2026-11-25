@@ -53,7 +53,6 @@ _REFUND_CARD_REPLY = {
     "[我发起了退款申请]": "收到啦～我这边现在在忙，12小时内会处理的，不好意思哈🙏######真的实在不好意思######这边非常抱歉影响您的心情了🙏",
     "[我修改了退款申请]": "收到啦～我这边现在在忙，12小时内会处理的，不好意思哈🙏######真的实在不好意思######这边非常抱歉影响您的心情了🙏",
 }
-_SIGNED_APOLOGY = "真的非常非常抱歉，让您不满意了，是我们没做好🙏 "
 # 签收后不满意：道歉 + 退货话术 + 跟进几句，分多条发
 _SIGNED_COMPLAINT_REPLY = ("真的非常非常抱歉，让您不满意了，是我们没做好🙏######" + _SIGNED_RETURN_REPLY +
                            "######您现在可以申请退货退款，我12小时内会同意的######真的实在不好意思######这边非常抱歉影响您的心情了🙏")
@@ -89,6 +88,7 @@ _DISSATISFIED_PROMPT = (
 _SHIPPED_SIGNALS = ("[你已发货]", "[我已发货", "[记得及时确认收货]", "订单已签收", "确认收货")
 # 同一会话有多个订单时（例如拍了没付款又重拍），优先看真正在走流程的那一单
 _ORDER_RANK = {"refunding": 0, "shipped": 1, "completed": 1, "pending_ship": 2, "refunded": 3, "cancelled": 4}
+_SIGNED_TEXT = "已签收（买家已收到货；问快递到哪了：「订单显示已经签收了哦，您看下快递柜或门口～」）" + _SIGNED_RULE
 # 尺寸由程序从标题和整段简介里找出来，单独一行给AI，避免AI漏看简介后面的尺寸（2026-11-25）
 _SIZE_RE = re.compile(
     r"(\d{2,3}(?:\.\d+)?)\s*(?:cm|CM|厘米|公分)?\s*(?:[*xX×✖✕＊乘]|\uFE0F)+\s*(\d{2,3}(?:\.\d+)?)\s*(cm|CM|厘米|公分)?"
@@ -874,12 +874,17 @@ class AIReplyEngine:
         return "高清艺术微喷款"
 
     async def _lookup_order_status(self, chat_id: str, item_id: str, db_session: AsyncSession, user_id: str = "") -> str:
+        """只要给AI看的订单状态文字（兼容旧调用）。"""
+        return (await self._lookup_order(chat_id, item_id, db_session, user_id))[1]
+
+    async def _lookup_order(self, chat_id: str, item_id: str, db_session: AsyncSession, user_id: str = ""):
+        """返回 (阶段, 给AI看的订单状态文字)。阶段：none/pending/shipped/signed/refunding/refunded/cancelled/unknown"""
         # 店主要求（2026-11-21）：AI按订单状态回答发货/售后问题；“已签收”来自闲鱼“订单已签收”卡片
         try:
             from common.models.xy_order import XYOrder
             norm = str(chat_id or "").split("@")[0]
             if not norm:
-                return "未知"
+                return "unknown", "未知"
             stmt = select(XYOrder).where(XYOrder.chat_id.in_({norm, norm + "@goofish", str(chat_id)}))
             if item_id:
                 stmt = stmt.where(XYOrder.item_id == str(item_id))
@@ -903,8 +908,8 @@ class AIReplyEngine:
                     logs = []
                 if any(any(sig in str(m or "") for sig in _SHIPPED_SIGNALS) for m in logs):
                     if any("签收" in str(m or "") or "确认收货" in str(m or "") for m in logs):
-                        return "已签收（买家已收到货）" + _SIGNED_RULE
-                    return "已发货（运输中；已发货，不能换款）" + _SHIPPED_RULE
+                        return "signed", _SIGNED_TEXT
+                    return "shipped", "已发货（运输中；已发货，不能换款）" + _SHIPPED_RULE
             if not order and user_id:
                 # 这个会话/商品对不上，聊天里也没有发货消息：看这个买家买过的其他订单（取消的不算）
                 others = [o for o in (await db_session.execute(select(XYOrder).where(
@@ -913,13 +918,15 @@ class AIReplyEngine:
                 order = min(others, key=lambda o: (_ORDER_RANK.get(str(o.status), 5), -int(o.id or 0))) if others else None
             if not order:
                 # 店主要求（2026-11-24）：没下单的人一上来就骂或贬低，不回复
-                return ("没有订单（买家还没拍下）。如果买家一上来（对话历史里还没聊过）就骂人，或只是说画难看、垃圾、不好这类贬低的话、"
+                return "none", ("没有订单（买家还没拍下）。如果买家一上来（对话历史里还没聊过）就骂人，或只是说画难看、垃圾、不好这类贬低的话、"
                         "并不是在问问题，就只输出 NO_REPLY 这几个字母，别的什么都不写；正常提问（包括质疑是不是手绘、问质量）照常回答")
             meta = order.metadata_json or {}
             # 有签收记录就是已收货（订单状态有时没及时更新，比如还停在「待发货」）
             if meta.get("signed_at") and order.status in ("shipped", "pending_ship", "completed"):
-                return "已签收（买家已收到货）" + _SIGNED_RULE
-            return {
+                return "signed", _SIGNED_TEXT
+            stage = {"pending_ship": "pending", "shipped": "shipped", "completed": "signed",
+                     "refunding": "refunding", "refunded": "refunded", "cancelled": "cancelled"}.get(order.status, "unknown")
+            return stage, {
                 "pending_ship": ("已付款，待发货（还没发货，可以换款。买家催发货、问什么时候发：先诚恳道歉，"
                                  "例如「真的不好意思让您久等了🙏」，再说已经预约好快递小哥了，他会来取件）"),
                 "shipped": ("已发货（运输中；已发货，不能换款。买家催发货、问怎么还没到：先诚恳道歉，"
@@ -932,7 +939,7 @@ class AIReplyEngine:
                 "cancelled": "已取消",
             }.get(order.status, str(order.status))
         except Exception:
-            return "未知"
+            return "unknown", "未知"
 
     def _soften_handmade_words(self, reply: str) -> str:
         # 店主要求：只说“手绘/手工画的”，不说“纯手绘”“一笔笔”
@@ -1130,9 +1137,9 @@ class AIReplyEngine:
                 # 店主要求（2026-11-21）：有平台活动，标价不一定是实付价，不把价格数字给AI
                 item_desc += "商品价格: 以买家下单页面显示为准（回复里不要报任何价格数字）\n"
                 item_desc += f"商品描述: {self._extract_readable_item_desc(item_info.get('desc'))}"
-                order_status_text = await self._lookup_order_status(chat_id, item_id, db_session, user_id)
-                signed_now = "售后阶段" in order_status_text
-                shipped_now = "已发货阶段" in order_status_text
+                order_stage, order_status_text = await self._lookup_order(chat_id, item_id, db_session, user_id)
+                signed_now = order_stage == "signed"                    # 已签收 / 已确认收货
+                shipped_now = order_stage in ("shipped", "refunding")   # 运输中 / 退款中
                 if not signed_now and not shipped_now and str(message or "").strip() not in _REFUND_CARD_REPLY:
                     fake10 = (await db_session.execute(select(AIChatMessage.id).where(
                         AIChatMessage.chat_id == chat_id, AIChatMessage.cookie_id == cookie_id,
@@ -1162,22 +1169,13 @@ class AIReplyEngine:
                     f"{msg['role']}: {msg['content']}" for msg in context[-10:]
                 ])
                 
-                # 构建用户消息
-                max_bargain_rounds = settings.get("max_bargain_rounds", 3)
-                max_discount_percent = settings.get("max_discount_percent", 10)
-                max_discount_amount = settings.get("max_discount_amount", 100)
+                # 构建用户消息（店主要求 2026-11-26：不再把「最大优惠10%」等议价设置给AI，店里一律不议价）
                 
                 user_prompt = f"""商品信息：
 {item_desc}
 
 对话历史：
 {context_str}
-
-议价设置：
-- 当前议价次数：{bargain_count}
-- 最大议价轮数：{max_bargain_rounds}
-- 最大优惠百分比：{max_discount_percent}%
-- 最大优惠金额：{max_discount_amount}元
 
 用户消息：{message}
 
@@ -1264,7 +1262,7 @@ class AIReplyEngine:
                         reply = self._soften_handmade_words(reply)
                         if signed_now:
                             reply = _strip_product_talk(reply)
-                        elif "已发货阶段" in order_status_text and ("不满意]" in reply or "[不满意" in reply):
+                        elif shipped_now and ("不满意]" in reply or "[不满意" in reply):
                             reply = _SIGNED_COMPLAINT_REPLY
                     # 二次检测：大模型返回后，若人工已介入暂停，则放弃本次回复
                     if (
