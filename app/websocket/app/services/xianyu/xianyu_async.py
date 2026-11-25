@@ -1664,12 +1664,68 @@ class XianyuAsync:
                 else:
                     logger.info(f"【{self.cookie_id}】⚠️ 自动确认发货和只发卡券均已关闭，跳过小刀订单自动发货")
                     await self._record_auto_confirm_disabled_reason(order_id)
+            elif card_title == "订单已签收":
+                # 店主要求（2026-11-25）：一签收就给买家发一条固定问候（每单只发一次）
+                import re as _re
+                m = _re.search(r"orderId=(\d+)", json.dumps(raw_message, ensure_ascii=False))
+                if m:
+                    asyncio.create_task(self._send_signed_greeting(m.group(1)))
+                else:
+                    logger.warning(f"【{self.cookie_id}】签收卡片里没找到订单号，未发签收问候")
             else:
                 logger.debug(f"【{self.cookie_id}】收到卡片消息: {card_title}")
                 
         except Exception as e:
             logger.error(f"【{self.cookie_id}】处理卡片消息失败: {e}")
     
+    SIGNED_GREETING = ("亲，您的画已经签收啦，希望您喜欢，也希望这幅画能给您的家增添一点艺术氛围～"
+                       "本店支持七天无理由退货，赠送退货运费险，不满意直接退货退款即可，有任何问题随时联系我们哦！祝您生活愉快！")
+
+    async def _send_signed_greeting(self, order_no: str) -> None:
+        """订单签收后给买家发固定问候。退款中/已退款/已关闭的订单不发；用订单 metadata.signed_greeting_sent 去重。"""
+        try:
+            from sqlalchemy import text as _text
+            from common.db.session import async_session_maker
+            await asyncio.sleep(random.uniform(5, 15))
+            async with async_session_maker() as session:
+                row = (await session.execute(_text(
+                    "SELECT status, buyer_id, chat_id, item_id, account_id FROM xy_orders WHERE order_no = :o LIMIT 1"),
+                    {"o": order_no})).first()
+                if not row:
+                    logger.warning(f"【{self.cookie_id}】签收问候：订单 {order_no} 不在订单表里，未发送")
+                    return
+                status, buyer_id, chat_id, item_id, account_id = row
+                if str(account_id or "") != str(self.cookie_id):
+                    logger.warning(f"【{self.cookie_id}】签收问候：订单 {order_no} 不属于当前账号，未发送")
+                    return
+                if status in ("refunding", "refunded", "cancelled"):
+                    logger.info(f"【{self.cookie_id}】签收问候：订单 {order_no} 状态 {status}，不发送")
+                    return
+                if not buyer_id:
+                    logger.warning(f"【{self.cookie_id}】签收问候：订单 {order_no} 缺少买家ID，未发送")
+                    return
+                # 先占位再发，保证同一订单只发一次
+                claimed = await session.execute(_text(
+                    "UPDATE xy_orders SET metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.signed_greeting_sent', "
+                    "CAST(NOW() AS CHAR)) WHERE order_no = :o "
+                    "AND JSON_EXTRACT(COALESCE(metadata, JSON_OBJECT()), '$.signed_greeting_sent') IS NULL"), {"o": order_no})
+                await session.commit()
+                if not claimed.rowcount:
+                    logger.info(f"【{self.cookie_id}】签收问候：订单 {order_no} 已经发过，跳过")
+                    return
+            if not chat_id:
+                if not item_id:
+                    logger.warning(f"【{self.cookie_id}】签收问候：订单 {order_no} 缺少会话和商品ID，未发送")
+                    return
+                chat_id = await self.create_chat_conversation(str(buyer_id), str(item_id))
+            res = await self.send_msg(self.ws, str(chat_id), str(buyer_id), self.SIGNED_GREETING)
+            if isinstance(res, dict) and res.get("success"):
+                logger.info(f"【{self.cookie_id}】签收问候已发送: 订单 {order_no}, chat_id={chat_id}")
+            else:
+                logger.warning(f"【{self.cookie_id}】签收问候发送失败: 订单 {order_no}, {res}")
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】签收问候异常: 订单 {order_no}, {e}")
+
     async def _handle_rate_request_message(self, parsed_message: dict, websocket) -> None:
         """处理评价请求消息，自动评价买家（参照旧框架message_handler_core.py）
         

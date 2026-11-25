@@ -1,5 +1,10 @@
 # 改动记录
 
+## 2026-11-25 — Greeting when an order is signed for; listing descriptions
+
+- Code (`xianyu_async.py`, image `signed-greet-ws-20261125`): when Xianyu's 「订单已签收」 workbench card arrives, the buyer gets one fixed message 5–15s later (signed-for greeting, mentions 7-day no-reason returns and return-shipping insurance). Once per order (`metadata.signed_greeting_sent`); skipped for refunding/refunded/cancelled orders. Rollback: `migration/signed-greeting-20261125/restore.sh`.
+- Listings (data only, no code): 50 of 60 paintings got the return note in their description and lost 「不退不换」-type wording, 「假一赔十」 and 「其他尺寸也有」 (seller backend edit API, description only; location and condition verified unchanged). 10 can only be edited in the Xianyu app.
+
 ## 2026-11-25 — Size: more description formats; unknown size → point to the description
 
 - Code (`ai_reply_engine.py`, image `size-desc-ws-20261125`): the size finder also reads `30cm 30cm`, `30cm40cm`, `3030cm` (lost ×) and a single side like `尺寸：约30cm`.
