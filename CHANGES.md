@@ -1,5 +1,11 @@
 # 改动记录
 
+## 2026-11-26 — Second complaint check for buyers whose order has shipped
+
+- Code (`ai_reply_engine.py`, image `complaint-check-ws-20261126`): for shipped / signed / refunding buyers, each message is first classified by a separate AI call as 满意 / 中性 / 不满意. 不满意 → apology + return script straight away; otherwise the normal reply runs (its own `[不满意]` tag still triggers the return script). If the check fails, the normal reply runs.
+- Tested on 13 tricky messages (praise, neutral questions, sarcasm, subtle complaints, emoji): 13/13 after wording fixes.
+- Rollback: `migration/complaint-check-20261126/restore.sh`.
+
 ## 2026-11-26 — Recognise buyers who already bought, even when the order isn't linked to the chat
 
 - Found: many orders have no chat_id (27 of 33 completed, 35 of 116 shipped), so buyers who had the goods were treated as strangers: abuse → no reply, 4-reply cap, no return script.

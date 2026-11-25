@@ -73,6 +73,18 @@ _SHIPPED_RULE = ("——已发货阶段：买家只要表达不满意（嫌不�
 # 店主要求（2026-11-25）：问假一赔十的买家不做生意。AI 判断后输出「NO_REPLY 假一赔十」，程序在会话里记一笔，
 # 之后这位买家（发货前）再发什么都不回；退货/退款卡片的固定回复不受影响
 _FAKE10_MARK = "[店主规则：此买家问过假一赔十，发货前不再回复]"
+# 店主要求（2026-11-26）：买过的买家（已发货/已签收/退款中）每条消息先单独判断一次是不是不满意，
+# 判断为不满意就直接发道歉+退货话术；不是的话再走正常回复（正常回复里AI标了[不满意]也照样发退货话术）
+_DISSATISFIED_PROMPT = (
+    "你是闲鱼卖家的售后助手，只做一件事：判断买家最新这条消息的态度。这位买家已经买了画，订单已发货或已收货。\n"
+    "结合对话历史，按意思判断，不看关键词。只能回答下面三个词之一：\n"
+    "满意：夸画好看、说喜欢、挂上了、道谢（比如「收到啦 很好看 谢谢」「挺喜欢的，挂客厅了」「不错不错」）。\n"
+    "中性：问物流、催发货、问怎么挂、问保养、平和地问是不是手绘或什么材质、打招呼、只说收到了、「好的」。\n"
+    "不满意：嫌画不好、难看、一般、「还行吧就那样」、失望、后悔、不值、和图片或描述不一样、说不是手绘或像打印的、觉得被骗、"
+    "破损磕碰、框歪、颜色不对、尺寸不对、要退货退款、生气、骂人、威胁差评或投诉、说反话阴阳怪气（比如「呵呵 真是好画啊」）、"
+    "只发生气或哭的表情。\n"
+    "只回答一个词：满意、中性 或 不满意。"
+)
 # 聊天里出现这些系统消息，就说明已经发货/签收（订单表没对上时兜底用）
 _SHIPPED_SIGNALS = ("[你已发货]", "[我已发货", "[记得及时确认收货]", "订单已签收", "确认收货")
 # 同一会话有多个订单时（例如拍了没付款又重拍），优先看真正在走流程的那一单
@@ -1199,7 +1211,31 @@ class AIReplyEngine:
                     settings.get("model_name"),
                 )
                 logger.info(f"【{cookie_id}】使用{provider_name} API生成回复 (provider_type={provider_type})")
-                if fixed_reply:
+                async def _call_ai(msgs):
+                    if provider_type == "dashscope_app":
+                        return await self._call_dashscope_api(settings, msgs)
+                    if provider_type == "gemini":
+                        return await self._call_gemini_api(settings, msgs)
+                    if provider_type == "anthropic":
+                        return await self._call_anthropic_api(settings, msgs)
+                    return await self._call_openai_api(settings, msgs)
+
+                complaint_forced = False
+                if not fixed_reply and (signed_now or shipped_now):
+                    try:
+                        verdict = str(await _call_ai([
+                            {"role": "system", "content": _DISSATISFIED_PROMPT},
+                            {"role": "user", "content": f"【只做判断，不要回复买家】\n对话历史：\n{context_str}\n\n买家最新消息：「{message}」\n\n"
+                                                    "这条消息的态度是（只回答 满意、中性、不满意 三个词之一）："},
+                        ]) or "").strip()
+                        logger.info(f"【{cookie_id}】买过的买家，不满意二次判断: {verdict[:10]} | {str(message)[:50]}")
+                        if verdict.startswith("不满意"):
+                            complaint_forced = True
+                            reply = _SIGNED_COMPLAINT_REPLY
+                    except Exception as e:
+                        logger.warning(f"【{cookie_id}】不满意二次判断失败，走正常回复: {e}")
+
+                if fixed_reply or complaint_forced:
                     pass
                 elif provider_type == "dashscope_app":
                     reply = await self._call_dashscope_api(settings, messages)
@@ -1223,7 +1259,7 @@ class AIReplyEngine:
                     return "EMPTY_REPLY"
                 if reply:
                     # 店主要求（2026-11-23）：签收/确认收货后若回复被拦截，直接发退货话术
-                    if not fixed_reply:
+                    if not fixed_reply and not complaint_forced:
                         reply = self._guard_seller_reply(reply, _SIGNED_COMPLAINT_REPLY if (signed_now or shipped_now) else None)
                         reply = self._soften_handmade_words(reply)
                         if signed_now:
