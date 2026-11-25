@@ -1,5 +1,12 @@
 # 改动记录
 
+## 2026-11-26 — Recognise buyers who already bought, even when the order isn't linked to the chat
+
+- Found: many orders have no chat_id (27 of 33 completed, 35 of 116 shipped), so buyers who had the goods were treated as strangers: abuse → no reply, 4-reply cap, no return script.
+- Code (`ai_reply_engine.py`, image `received-ws-20261126`): order lookup is chat → buyer + item → chat-log shipping messages → buyer's other orders (not cancelled). A `signed_at` record means received regardless of a stale status. The 4-reply cap also checks the buyer's own orders. Refunded buyers who still complain get an apology only, no arguing.
+- Checked on 167 real chats from the last 14 days: 12 chats now get a more accurate status; strangers still count as no order.
+- Rollback: `migration/received-detect-20261126/restore.sh`.
+
 ## 2026-11-25 — Buyers who ask 假一赔十 get no reply before shipping
 
 - Prompt + code (`ai_reply_engine.py`, image `fake10-ws-20261125`): before shipping (no order, unpaid, paid-not-shipped), a buyer asking 假一赔十/假一赔N gets no reply; the AI outputs `NO_REPLY 假一赔十` and the program saves a marker in the chat, so every later message from that buyer is also ignored. Refund/return cards still get their fixed reply. After shipping it counts as dissatisfaction → apology + return script. 「保真吗」 alone is still answered by craft.

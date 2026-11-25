@@ -810,6 +810,16 @@ class AIReplyEngine:
                             XYOrder.chat_id.in_({normalized, normalized + "@goofish", str(chat_id)})
                         ).limit(1)
                     )).scalar()
+                    if order_id is None:
+                        # 很多订单没记会话ID（2026-11-25 发现）：再按这个会话里的买家本人查
+                        buyer = (await session.execute(select(AIChatMessage.user_id).where(
+                            AIChatMessage.cookie_id == cookie_id,
+                            AIChatMessage.chat_id.in_({normalized, normalized + "@goofish", str(chat_id)}),
+                            AIChatMessage.role == "user").limit(1))).scalar()
+                        if buyer:
+                            order_id = (await session.execute(select(XYOrder.id).where(
+                                XYOrder.buyer_id == str(buyer),
+                                XYOrder.status.notin_(("cancelled",))).limit(1))).scalar()
                     return order_id is None
                 return False
         except Exception:
@@ -851,7 +861,7 @@ class AIReplyEngine:
             return "手绘款"
         return "高清艺术微喷款"
 
-    async def _lookup_order_status(self, chat_id: str, item_id: str, db_session: AsyncSession) -> str:
+    async def _lookup_order_status(self, chat_id: str, item_id: str, db_session: AsyncSession, user_id: str = "") -> str:
         # 店主要求（2026-11-21）：AI按订单状态回答发货/售后问题；“已签收”来自闲鱼“订单已签收”卡片
         try:
             from common.models.xy_order import XYOrder
@@ -862,6 +872,11 @@ class AIReplyEngine:
             if item_id:
                 stmt = stmt.where(XYOrder.item_id == str(item_id))
             orders = (await db_session.execute(stmt.order_by(XYOrder.id.desc()).limit(10))).scalars().all()
+            # 店主要求（2026-11-25）：一定要认出买家已经拿到货。很多订单没记会话ID，按会话找不到时再按买家本人找
+            if not orders and user_id:
+                orders = (await db_session.execute(select(XYOrder).where(
+                    XYOrder.buyer_id == str(user_id), XYOrder.item_id == str(item_id or "")
+                ).order_by(XYOrder.id.desc()).limit(10))).scalars().all()
             order = min(orders, key=lambda o: (_ORDER_RANK.get(str(o.status), 5), -int(o.id or 0))) if orders else None
             if not order or order.status in ("pending_ship", "cancelled"):
                 # 订单表没对上时，看聊天记录里有没有「已发货/已签收」的系统消息
@@ -878,12 +893,19 @@ class AIReplyEngine:
                     if any("签收" in str(m or "") or "确认收货" in str(m or "") for m in logs):
                         return "已签收（买家已收到货）" + _SIGNED_RULE
                     return "已发货（运输中；已发货，不能换款）" + _SHIPPED_RULE
+            if not order and user_id:
+                # 这个会话/商品对不上，聊天里也没有发货消息：看这个买家买过的其他订单（取消的不算）
+                others = [o for o in (await db_session.execute(select(XYOrder).where(
+                    XYOrder.buyer_id == str(user_id)).order_by(XYOrder.id.desc()).limit(20))).scalars().all()
+                    if o.status != "cancelled"]
+                order = min(others, key=lambda o: (_ORDER_RANK.get(str(o.status), 5), -int(o.id or 0))) if others else None
             if not order:
                 # 店主要求（2026-11-24）：没下单的人一上来就骂或贬低，不回复
                 return ("没有订单（买家还没拍下）。如果买家一上来（对话历史里还没聊过）就骂人，或只是说画难看、垃圾、不好这类贬低的话、"
                         "并不是在问问题，就只输出 NO_REPLY 这几个字母，别的什么都不写；正常提问（包括质疑是不是手绘、问质量）照常回答")
             meta = order.metadata_json or {}
-            if order.status == "shipped" and meta.get("signed_at"):
+            # 有签收记录就是已收货（订单状态有时没及时更新，比如还停在「待发货」）
+            if meta.get("signed_at") and order.status in ("shipped", "pending_ship", "completed"):
                 return "已签收（买家已收到货）" + _SIGNED_RULE
             return {
                 "pending_ship": ("已付款，待发货（还没发货，可以换款。买家催发货、问什么时候发：先诚恳道歉，"
@@ -893,7 +915,8 @@ class AIReplyEngine:
                 "completed": "买家已确认收货（交易完成）" + _SIGNED_RULE,
                 "refunding": ("退款中（买家已申请退货/退款；问什么时候处理、什么时候同意：回复「我这边现在在忙，"
                               "12小时内会处理的，不好意思哈🙏」；不要再谈手绘、微喷等商品性质）" + _SHIPPED_RULE),
-                "refunded": "已退款",
+                "refunded": ("已退款（钱已退回。买家还不满意或抱怨：只诚恳道歉，例如「真的非常抱歉让您不满意了🙏」，"
+                             "不争辩，不谈手绘、微喷、工艺）"),
                 "cancelled": "已取消",
             }.get(order.status, str(order.status))
         except Exception:
@@ -1095,7 +1118,7 @@ class AIReplyEngine:
                 # 店主要求（2026-11-21）：有平台活动，标价不一定是实付价，不把价格数字给AI
                 item_desc += "商品价格: 以买家下单页面显示为准（回复里不要报任何价格数字）\n"
                 item_desc += f"商品描述: {self._extract_readable_item_desc(item_info.get('desc'))}"
-                order_status_text = await self._lookup_order_status(chat_id, item_id, db_session)
+                order_status_text = await self._lookup_order_status(chat_id, item_id, db_session, user_id)
                 signed_now = "售后阶段" in order_status_text
                 shipped_now = "已发货阶段" in order_status_text
                 if not signed_now and not shipped_now and str(message or "").strip() not in _REFUND_CARD_REPLY:
