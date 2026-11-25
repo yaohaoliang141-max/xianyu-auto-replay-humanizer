@@ -1,5 +1,12 @@
 # 改动记录
 
+## 2026-11-25 — Once shipped, any complaint gets only the return script
+
+- Cause: a buyer had two orders in one chat (an unpaid duplicate that was cancelled, and the real shipped one). The AI read the newer cancelled order, thought nothing was bought, and kept arguing 「是手绘的」.
+- Code (`ai_reply_engine.py`, image `shipped-return-ws-20261125`): with several orders in one chat, the real one wins (refunding > shipped/completed > pending_ship > refunded > cancelled). If no order matches, 「你已发货 / 订单已签收 / 确认收货」 system messages in the chat log count as shipped/signed. Shipped (in transit) and refunding now carry the same rule as signed: any dissatisfaction → `[不满意]` → apology + return script; no talk of 手绘/工艺.
+- Prompt: the after-sale rule covers 已发货 / 已签收 / 已确认收货 / 退款中; no more "explain hand-painted, then the return line".
+- Rollback: `migration/shipped-return-20261125/restore.sh`.
+
 ## 2026-11-25 — Greeting when an order is signed for; listing descriptions
 
 - Code (`xianyu_async.py`, image `signed-greet-ws-20261125`): when Xianyu's 「订单已签收」 workbench card arrives, the buyer gets one fixed message 5–15s later (signed-for greeting, mentions 7-day no-reason returns and return-shipping insurance). Once per order (`metadata.signed_greeting_sent`); skipped for refunding/refunded/cancelled orders. Rollback: `migration/signed-greeting-20261125/restore.sh`.

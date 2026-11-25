@@ -66,6 +66,14 @@ _SIGNED_RULE = ("——售后阶段：已发货，不能换款；不要说手绘
                 "其他正常问题（比如怎么挂）：简短正常回答。"
                 "买家表达不满意（嫌不好、觉得货不对板、生气、骂人都算，按意思判断，不看关键词）：只输出 [不满意] 这几个字，"
                 "别的什么都不写，程序会自动发道歉和退货话术。")
+# 店主要求（2026-11-25）：只要已发货（含运输中、退款中），买家一说不好就只发道歉+退货话术，没有第二种说法
+_SHIPPED_RULE = ("——已发货阶段：买家只要表达不满意（嫌不好、说不是手绘、觉得被骗、货不对板、生气骂人都算，按意思判断，不看关键词）："
+                 "只输出 [不满意] 这几个字，别的什么都不写，程序会自动发道歉和退货话术；不解释手绘、微喷、工艺，不争辩。"
+                 "其他正常问题照常简短回答。")
+# 聊天里出现这些系统消息，就说明已经发货/签收（订单表没对上时兜底用）
+_SHIPPED_SIGNALS = ("[你已发货]", "[我已发货", "[记得及时确认收货]", "订单已签收", "确认收货")
+# 同一会话有多个订单时（例如拍了没付款又重拍），优先看真正在走流程的那一单
+_ORDER_RANK = {"refunding": 0, "shipped": 1, "completed": 1, "pending_ship": 2, "refunded": 3, "cancelled": 4}
 # 尺寸由程序从标题和整段简介里找出来，单独一行给AI，避免AI漏看简介后面的尺寸（2026-11-25）
 _SIZE_RE = re.compile(
     r"(\d{2,3}(?:\.\d+)?)\s*(?:cm|CM|厘米|公分)?\s*(?:[*xX×✖✕＊乘]|\uFE0F)+\s*(\d{2,3}(?:\.\d+)?)\s*(cm|CM|厘米|公分)?"
@@ -850,7 +858,23 @@ class AIReplyEngine:
             stmt = select(XYOrder).where(XYOrder.chat_id.in_({norm, norm + "@goofish", str(chat_id)}))
             if item_id:
                 stmt = stmt.where(XYOrder.item_id == str(item_id))
-            order = (await db_session.execute(stmt.order_by(XYOrder.id.desc()).limit(1))).scalars().first()
+            orders = (await db_session.execute(stmt.order_by(XYOrder.id.desc()).limit(10))).scalars().all()
+            order = min(orders, key=lambda o: (_ORDER_RANK.get(str(o.status), 5), -int(o.id or 0))) if orders else None
+            if not order or order.status in ("pending_ship", "cancelled"):
+                # 订单表没对上时，看聊天记录里有没有「已发货/已签收」的系统消息
+                try:
+                    from sqlalchemy import text as _sql_text, bindparam as _bindparam
+                    _q = _sql_text(
+                        "SELECT source_message FROM xy_auto_reply_message_logs WHERE chat_id IN :c "
+                        "AND decision_reason IN ('system_message', 'self_message') ORDER BY id DESC LIMIT 200"
+                    ).bindparams(_bindparam("c", expanding=True))
+                    logs = (await db_session.execute(_q, {"c": [norm, norm + "@goofish"]})).scalars().all()
+                except Exception:
+                    logs = []
+                if any(any(sig in str(m or "") for sig in _SHIPPED_SIGNALS) for m in logs):
+                    if any("签收" in str(m or "") or "确认收货" in str(m or "") for m in logs):
+                        return "已签收（买家已收到货）" + _SIGNED_RULE
+                    return "已发货（运输中；已发货，不能换款）" + _SHIPPED_RULE
             if not order:
                 # 店主要求（2026-11-24）：没下单的人一上来就骂或贬低，不回复
                 return ("没有订单（买家还没拍下）。如果买家一上来（对话历史里还没聊过）就骂人，或只是说画难看、垃圾、不好这类贬低的话、"
@@ -862,10 +886,10 @@ class AIReplyEngine:
                 "pending_ship": ("已付款，待发货（还没发货，可以换款。买家催发货、问什么时候发：先诚恳道歉，"
                                  "例如「真的不好意思让您久等了🙏」，再说已经预约好快递小哥了，他会来取件）"),
                 "shipped": ("已发货（运输中；已发货，不能换款。买家催发货、问怎么还没到：先诚恳道歉，"
-                            "例如「真的不好意思让您久等了🙏」，再说已经发出了哦，闲鱼订单里可以看物流～）"),
+                            "例如「真的不好意思让您久等了🙏」，再说已经发出了哦，闲鱼订单里可以看物流～）" + _SHIPPED_RULE),
                 "completed": "买家已确认收货（交易完成）" + _SIGNED_RULE,
                 "refunding": ("退款中（买家已申请退货/退款；问什么时候处理、什么时候同意：回复「我这边现在在忙，"
-                              "12小时内会处理的，不好意思哈🙏」；不要再谈手绘、微喷等商品性质）"),
+                              "12小时内会处理的，不好意思哈🙏」；不要再谈手绘、微喷等商品性质）" + _SHIPPED_RULE),
                 "refunded": "已退款",
                 "cancelled": "已取消",
             }.get(order.status, str(order.status))
@@ -1162,6 +1186,8 @@ class AIReplyEngine:
                         reply = self._soften_handmade_words(reply)
                         if signed_now:
                             reply = _strip_product_talk(reply)
+                        elif "已发货阶段" in order_status_text and ("不满意]" in reply or "[不满意" in reply):
+                            reply = _SIGNED_COMPLAINT_REPLY
                     # 二次检测：大模型返回后，若人工已介入暂停，则放弃本次回复
                     if (
                         pause_manager.is_chat_paused(chat_id, cookie_id)
