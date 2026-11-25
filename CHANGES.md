@@ -1,5 +1,11 @@
 # 改动记录
 
+## 2026-11-25 — Size: read it from title + whole description; only one size exists
+
+- Code (`ai_reply_engine.py`, image `size-line-ws-20261125`): the size is extracted from the title and the full description (30*40, 30x40, 30×40, 30✖️40, 30乘40, with or without cm) and passed to the AI as its own line `商品尺寸: …`. The AI only says it needs to check when neither the title nor the description has a size.
+- Prompt: all paintings come in one size only. Asking for a bigger/smaller/custom size → 「目前只有这一个尺寸哦～」, no more 「其他尺寸我问下店主哦」.
+- Rollback: `migration/size-one-20261125/restore.sh`.
+
 ## 2026-11-25 — Alert when the login-token service runs out of balance
 
 The scheduler's token renewal task renews the Xianyu IM token through a paid remote API. When that balance ran out (11-24 05:55), renewal failed silently; the websocket kept an expired token and stopped receiving buyer messages after its next reconnect (11-25 07:11). `ops/daily-check.sh` now reports `expired_token_in_use`, `token_balance_fail`, `token_renew_fail` and `last_buyer_msg`, and the daily risk check flags any of them in red. A websocket-side renewal fix was built and tested but not deployed (the scheduler already renews).

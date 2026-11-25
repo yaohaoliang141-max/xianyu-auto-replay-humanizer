@@ -66,6 +66,22 @@ _SIGNED_RULE = ("——售后阶段：已发货，不能换款；不要说手绘
                 "其他正常问题（比如怎么挂）：简短正常回答。"
                 "买家表达不满意（嫌不好、觉得货不对板、生气、骂人都算，按意思判断，不看关键词）：只输出 [不满意] 这几个字，"
                 "别的什么都不写，程序会自动发道歉和退货话术。")
+# 尺寸由程序从标题和整段简介里找出来，单独一行给AI，避免AI漏看简介后面的尺寸（2026-11-25）
+_SIZE_RE = re.compile(
+    r"(\d{2,3}(?:\.\d+)?)\s*(?:cm|CM|厘米|公分)?\s*(?:[*xX×✖✕＊乘]|\uFE0F)+\s*(\d{2,3}(?:\.\d+)?)\s*(cm|CM|厘米|公分)?"
+)
+
+
+def _find_sizes(*texts):
+    found = []
+    for t in texts:
+        for a, b, _u in _SIZE_RE.findall(str(t or "")):
+            v = f"{a}×{b}cm"
+            if v not in found:
+                found.append(v)
+    return found
+
+
 _PRODUCT_TALK_RE = re.compile(r"手绘|微喷|画室|手工|打印|印刷|工艺|材质|颜料|油画布")
 
 
@@ -1038,6 +1054,13 @@ class AIReplyEngine:
                 item_desc += f"商品描述: {self._extract_readable_item_desc(item_info.get('desc'))}"
                 order_status_text = await self._lookup_order_status(chat_id, item_id, db_session)
                 signed_now = "售后阶段" in order_status_text
+                _sizes = _find_sizes(item_info.get('title'), item_info.get('desc'))
+                if len(_sizes) == 1:
+                    item_desc += f"\n商品尺寸: {_sizes[0]}（从标题/简介里找到的，买家问尺寸直接告诉他）"
+                elif _sizes:
+                    item_desc += f"\n商品尺寸: {'、'.join(_sizes)}（标题/简介里写了这几个，以标题里的为准）"
+                else:
+                    item_desc += "\n商品尺寸: 标题和简介里都没写"
                 item_desc += "\n制作方式: " + ("（买家已收货，不再谈手绘、微喷等商品性质）" if signed_now else self._made_label(item_info))
                 item_desc += "\n订单状态: " + order_status_text
                 
