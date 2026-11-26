@@ -1,5 +1,13 @@
 # 改动记录
 
+## 2026-11-27 — 24h watchdog on the server, alerts straight to Feishu
+
+- New `ops/watchdog.py`, installed at `/opt/xianyu-local-modified/watchdog/` with `/etc/cron.d/xianyu-watchdog` (every 5 min). It runs on the server, so alerts still arrive when the owner's PC is off. Read-only.
+- Checks: services healthy; Xianyu IM connected (must fail twice in a row); token 余额不足 / expired token in use / renew failed; AI API errors; failed signed-for greetings; slider or account validation; risk words (违规/处罚/封禁/限制登录…); order sync last success > 60 min; no buyer message for 6h (08–23 Beijing); memory < 200 MB, disk ≥ 90%.
+- Each problem is sent once and repeated at most every 2h. Ongoing problems get a 「已恢复」 message when they clear. The first run after 09:00 adds a daily "monitor alive" line. A failed Feishu send rescans the same window next run.
+- The webhook lives only on the server (`watchdog/feishu-webhook`, chmod 600) and is not in this repo. Remove: `rm /etc/cron.d/xianyu-watchdog`.
+- The first scan found a real 「内容违规处罚」 notice from Xianyu on 2026-11-26 08:31.
+
 ## 2026-11-26 — Signed-for greeting: two short messages, and make sure it is sent
 
 - Code (`xianyu_async.py`, image `greet-two-ws-20261126`): the greeting is now two messages, 「亲，画已经签收啦，希望您喜欢😊」 then 「不满意可以直接退货，有运费险的～」, 2–4s apart.
