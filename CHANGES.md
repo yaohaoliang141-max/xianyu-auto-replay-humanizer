@@ -1,5 +1,12 @@
 # 改动记录
 
+## 2026-11-26 — Signed-for greeting: two short messages, and make sure it is sent
+
+- Code (`xianyu_async.py`, image `greet-two-ws-20261126`): the greeting is now two messages, 「亲，画已经签收啦，希望您喜欢😊」 then 「不满意可以直接退货，有运费险的～」, 2–4s apart.
+- Reliability: if the order isn't synced yet, look again every minute for up to 15 min. If sending fails, retry 3 times 30s apart, continuing from the message that failed. If all fail, remove the sent mark so a repeated 签收 notice re-sends it. Still once per order (Xianyu sometimes pushes the notice twice). Refunding orders now get it too; refunded and cancelled orders don't.
+- `ops/daily-check.sh`: `signed_greeting_sent / signed_greeting_failed`; failures are flagged yellow so the owner can message those buyers by hand.
+- Rollback: `migration/greet-two-20261126/restore.sh`.
+
 ## 2026-11-26 — Cleanup: remove conflicting and duplicate rules
 
 - Code (`ai_reply_engine.py`, image `cleanup-ws-20261126`): the upstream 「议价设置：最大优惠10%/100元」 block is no longer sent to the AI (it contradicted 「标价就是卖价」). The order lookup now returns an explicit stage (`none/pending/shipped/signed/refunding/refunded/cancelled`) instead of searching the status text for 「售后阶段/已发货阶段」. An unused constant was removed.

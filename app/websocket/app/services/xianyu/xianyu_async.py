@@ -1678,53 +1678,86 @@ class XianyuAsync:
         except Exception as e:
             logger.error(f"【{self.cookie_id}】处理卡片消息失败: {e}")
     
-    SIGNED_GREETING = ("亲，您的画已经签收啦，希望您喜欢，也希望这幅画能给您的家增添一点艺术氛围～"
-                       "本店支持七天无理由退货，赠送退货运费险，不满意直接退货退款即可，有任何问题随时联系我们哦！祝您生活愉快！")
+    # 店主要求（2026-11-26）：签收问候分两条发；只要签收就一定要发到
+    SIGNED_GREETING = ("亲，画已经签收啦，希望您喜欢😊", "不满意可以直接退货，有运费险的～")
 
     async def _send_signed_greeting(self, order_no: str) -> None:
-        """订单签收后给买家发固定问候。退款中/已退款/已关闭的订单不发；用订单 metadata.signed_greeting_sent 去重。"""
+        """订单签收后给买家发固定问候（两条）。同一订单只发一次（闲鱼有时会重复推送签收通知）；
+        已退款/已关闭的订单不发。订单还没同步进来就每分钟再查，最多等15分钟；发送失败重试3次，
+        全部失败就撤销「已发送」标记，之后再来签收通知还能补发。"""
+        from sqlalchemy import text as _text
+        from common.db.session import async_session_maker
+        log = f"【{self.cookie_id}】签收问候：订单 {order_no}"
+        await asyncio.sleep(random.uniform(5, 15))
+        row = None
+        for attempt in range(16):
+            try:
+                async with async_session_maker() as session:
+                    row = (await session.execute(_text(
+                        "SELECT status, buyer_id, chat_id, item_id, account_id FROM xy_orders WHERE order_no = :o LIMIT 1"),
+                        {"o": order_no})).first()
+            except Exception as e:
+                logger.warning(f"{log} 查订单失败: {e}")
+            if row:
+                break
+            if attempt == 0:
+                logger.info(f"{log} 还不在订单表里，每分钟再查一次，最多等15分钟")
+            await asyncio.sleep(60)
+        if not row:
+            logger.warning(f"{log} 等了15分钟订单还没同步进来，未发送")
+            return
+        status, buyer_id, chat_id, item_id, account_id = row
+        if str(account_id or "") != str(self.cookie_id):
+            logger.warning(f"{log} 不属于当前账号，未发送")
+            return
+        if status in ("refunded", "cancelled"):
+            logger.info(f"{log} 状态 {status}，不发送")
+            return
+        if not buyer_id:
+            logger.warning(f"{log} 缺少买家ID，未发送")
+            return
         try:
-            from sqlalchemy import text as _text
-            from common.db.session import async_session_maker
-            await asyncio.sleep(random.uniform(5, 15))
             async with async_session_maker() as session:
-                row = (await session.execute(_text(
-                    "SELECT status, buyer_id, chat_id, item_id, account_id FROM xy_orders WHERE order_no = :o LIMIT 1"),
-                    {"o": order_no})).first()
-                if not row:
-                    logger.warning(f"【{self.cookie_id}】签收问候：订单 {order_no} 不在订单表里，未发送")
-                    return
-                status, buyer_id, chat_id, item_id, account_id = row
-                if str(account_id or "") != str(self.cookie_id):
-                    logger.warning(f"【{self.cookie_id}】签收问候：订单 {order_no} 不属于当前账号，未发送")
-                    return
-                if status in ("refunding", "refunded", "cancelled"):
-                    logger.info(f"【{self.cookie_id}】签收问候：订单 {order_no} 状态 {status}，不发送")
-                    return
-                if not buyer_id:
-                    logger.warning(f"【{self.cookie_id}】签收问候：订单 {order_no} 缺少买家ID，未发送")
-                    return
-                # 先占位再发，保证同一订单只发一次
                 claimed = await session.execute(_text(
                     "UPDATE xy_orders SET metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.signed_greeting_sent', "
                     "CAST(NOW() AS CHAR)) WHERE order_no = :o "
                     "AND JSON_EXTRACT(COALESCE(metadata, JSON_OBJECT()), '$.signed_greeting_sent') IS NULL"), {"o": order_no})
                 await session.commit()
-                if not claimed.rowcount:
-                    logger.info(f"【{self.cookie_id}】签收问候：订单 {order_no} 已经发过，跳过")
-                    return
-            if not chat_id:
-                if not item_id:
-                    logger.warning(f"【{self.cookie_id}】签收问候：订单 {order_no} 缺少会话和商品ID，未发送")
-                    return
-                chat_id = await self.create_chat_conversation(str(buyer_id), str(item_id))
-            res = await self.send_msg(self.ws, str(chat_id), str(buyer_id), self.SIGNED_GREETING)
-            if isinstance(res, dict) and res.get("success"):
-                logger.info(f"【{self.cookie_id}】签收问候已发送: 订单 {order_no}, chat_id={chat_id}")
-            else:
-                logger.warning(f"【{self.cookie_id}】签收问候发送失败: 订单 {order_no}, {res}")
         except Exception as e:
-            logger.warning(f"【{self.cookie_id}】签收问候异常: 订单 {order_no}, {e}")
+            logger.warning(f"{log} 标记失败，未发送: {e}")
+            return
+        if not claimed.rowcount:
+            logger.info(f"{log} 已经发过（重复的签收通知），跳过")
+            return
+        next_i = 0
+        for attempt in range(3):
+            try:
+                if not chat_id:
+                    if not item_id:
+                        raise RuntimeError("缺少会话和商品ID")
+                    chat_id = await self.create_chat_conversation(str(buyer_id), str(item_id))
+                while next_i < len(self.SIGNED_GREETING):
+                    if next_i:
+                        await asyncio.sleep(random.uniform(2, 4))
+                    res = await self.send_msg(self.ws, str(chat_id), str(buyer_id), self.SIGNED_GREETING[next_i])
+                    if not (isinstance(res, dict) and res.get("success")):
+                        raise RuntimeError(f"第{next_i + 1}条发送失败: {res}")
+                    next_i += 1
+                logger.info(f"{log} 已发送（{len(self.SIGNED_GREETING)}条）, chat_id={chat_id}")
+                return
+            except Exception as e:
+                logger.warning(f"{log} 第{attempt + 1}次发送没成功: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(30)
+        try:
+            async with async_session_maker() as session:
+                await session.execute(_text(
+                    "UPDATE xy_orders SET metadata = JSON_REMOVE(metadata, '$.signed_greeting_sent') WHERE order_no = :o"),
+                    {"o": order_no})
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"{log} 撤销已发送标记失败: {e}")
+        logger.error(f"{log} 重试3次都没发出去（已发 {next_i}/{len(self.SIGNED_GREETING)} 条），已撤销标记，下次签收通知会补发")
 
     async def _handle_rate_request_message(self, parsed_message: dict, websocket) -> None:
         """处理评价请求消息，自动评价买家（参照旧框架message_handler_core.py）

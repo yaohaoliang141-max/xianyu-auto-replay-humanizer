@@ -23,6 +23,7 @@ echo "token_balance_fail=$(( $(echo "$D" | grep -c '余额不足') + $(echo "$SR
 echo "token_renew_fail=$(echo "$SR" | grep -c '续期未成功')  token_renew_fail_last=$(echo "$SR" | grep '续期未成功' | tail -1 | cut -c1-16)  token_renew_ok_last=$(echo "$SR" | grep '远程接口取Token成功' | tail -1 | cut -c1-16)"
 SO=$(cat $(ls -t $SL/scheduler*.log | head -2) 2>/dev/null | awk -v s="$S" 'substr($0,1,19) >= s' | sort | grep '【定时获取闲鱼订单】执行完成')
 echo "order_sync_runs=$(echo "$SO" | grep -c '成功1/')  order_sync_fail=$(echo "$SO" | grep -vc '成功1/')  order_sync_ok_last=$(echo "$SO" | grep '成功1/' | tail -1 | cut -c1-16)  newest_order=$(docker exec xianyu-ecs-mysql-1 sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" xianyu_data -N -e "select max(placed_at) from xy_orders" 2>/dev/null')"
+echo "signed_greeting_sent=$(echo "$D" | grep -cE '签收问候(已发送|：订单.*已发送)')  signed_greeting_failed=$(echo "$D" | grep -cE '签收问候：订单.*(重试3次都没发出去|等了15分钟)')"
 echo "last_buyer_msg=$(docker exec xianyu-ecs-mysql-1 sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" xianyu_data -N -e "select max(source_message_time) from xy_auto_reply_message_logs where decision_reason not in (\"self_message\",\"system_message\")" 2>/dev/null')"
 echo "== latest risk lines (last 24h)"
 echo "$D" | grep -E '检测到需要滑块验证|AccessDenied|违规|处罚|封禁|账号异常|发送消息失败' | tail -5 | cut -c1-200
