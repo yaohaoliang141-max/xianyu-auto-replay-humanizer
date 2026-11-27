@@ -1,5 +1,11 @@
 # 改动记录
 
+## 2026-11-27 — Watchdog: say each thing once
+
+- Owner's rule: no repeated reminders. An ongoing problem is sent once (the 2-hourly 「仍未解决」 reminder is gone), plus one 「已恢复」 line when it clears. The same kind of log event (token 余额不足, AI errors, risk words…) is sent at most once a day.
+- Refunds: one message per order. The second 「已退款」 message when the refund completes is gone.
+- Complaints: one message per buyer, even if they complain several times.
+
 ## 2026-11-27 — Watchdog: Feishu message for every refund and every unhappy paid buyer
 
 - `ops/watchdog.py`: each new refund request (and each finished refund) is sent to Feishu with item, amount, order time, signed or not, and the buyer's last few messages. So is every time the AI sends the 「让您不满意了…可以直接退货」 script to a buyer who already paid, with the buyer's words and order stage. No nickname, receiver, address or phone.

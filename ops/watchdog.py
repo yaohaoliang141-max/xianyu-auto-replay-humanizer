@@ -2,19 +2,19 @@
 """24h watchdog for the Xianyu auto-reply server. Runs on the server itself (cron, every 5 minutes),
 so it keeps working when the owner's PC is off. Read-only: it changes nothing in the app.
 
-Problems go straight to the owner's Feishu group bot. Each problem is sent once, repeated at most every
-2 hours while it lasts, and a 「已恢复」 message is sent when it clears. The first run after 09:00 each day
-adds a short "watchdog alive" message (no message that day = the watchdog itself stopped). `--test` sends
-one test message.
-Also (2026-11-27, owner's request): every new refund request / finished refund, and every time the AI sent the
-「让您不满意了…可以直接退货」 script to a buyer who already paid, is sent with item, amount, order stage and the
-buyer's own words (no nickname, receiver, address or phone)."""
-"""
+Problems go straight to the owner's Feishu group bot. Owner's rule (2026-11-27): say each thing ONCE.
+- An ongoing problem is sent once (no reminders while it lasts), plus one 「已恢复」 line when it clears.
+- The same kind of log event (token 余额不足, AI errors, risk words...) at most once a day.
+- Each refunded order once (when it first shows up as 退款中/已退款).
+- Each unhappy paid buyer once (the first time the AI sends them the 「让您不满意了…可以直接退货」 script),
+  with item, order stage and the buyer's own words. No nickname, receiver, address or phone.
+The first run after 09:00 each day adds a short "watchdog alive" line (none that day = watchdog stopped).
+`--test` sends one test message.
 
 Files (server, not in git):
   /opt/xianyu-local-modified/watchdog/feishu-webhook   webhook URL, chmod 600 — never print or commit it
-  /opt/xianyu-local-modified/watchdog/state.json       which problems are open, last check time
-Never puts buyer names, addresses, phones or chat text into a message."""
+  /opt/xianyu-local-modified/watchdog/state.json       open problems, what was already reported, last check time
+"""
 import json, os, re, subprocess, sys, time, urllib.request
 from datetime import datetime, timedelta
 
@@ -23,7 +23,7 @@ HERE = BASE + "/watchdog"
 STATE = HERE + "/state.json"
 WS_LOG = BASE + "/data/logs/websocket/websocket.log"
 SCHED_DIR = BASE + "/data/logs/scheduler"
-REPEAT_S = 2 * 3600
+EVENT_QUIET_S = 24 * 3600   # the same kind of log event (e.g. token 余额不足) is reported once a day at most
 ORDER_SYNC_MAX_MIN = 60
 QUIET_MAX_H = 6
 
@@ -143,18 +143,15 @@ def order_events(st):
               "JSON_EXTRACT(o.metadata,'$.signed_at') IS NOT NULL, "
               "(SELECT title FROM xy_catalog_items c WHERE c.item_id=o.item_id LIMIT 1) "
               "FROM xy_orders o WHERE o.status IN ('refunding','refunded')")
+    # owner (2026-11-27): say it once — one message per refunded order, nothing more when the refund completes
     seen = st.get("refund_seen")
-    cur = {r[0]: r[1] for r in rows}
-    if seen is not None:
-        for no, status, amount, placed, chat, buyer, signed, title in rows:
-            if seen.get(no) == status:
-                continue
-            if status == "refunding" or (status == "refunded" and no not in seen):
-                head = "💸 有人申请退款" if status == "refunding" else "💸 有一单退款了（没经过「退款中」就直接退了）"
-                msgs.append(f"{head}\n商品：{clip(title, 40) or '（未知商品）'}\n金额：¥{amount}　下单：{str(placed)[5:16]}"
-                            f"　{'已签收' if signed else '未签收'}\n买家最近说的话：{buyer_words(chat, buyer)}")
-            elif status == "refunded":
-                msgs.append(f"✔️ 已退款：{clip(title, 30) or '（未知商品）'}　¥{amount}")
+    cur = dict(seen or {})
+    for no, status, amount, placed, chat, buyer, signed, title in rows:
+        if seen is not None and no not in seen:
+            head = "💸 有人申请退款" if status == "refunding" else "💸 有一单退款了"
+            msgs.append(f"{head}\n商品：{clip(title, 40) or '（未知商品）'}\n金额：¥{amount}　下单：{str(placed)[5:16]}"
+                        f"　{'已签收' if signed else '未签收'}\n买家最近说的话：{buyer_words(chat, buyer)}")
+        cur[no] = status
     st["refund_seen"] = cur
 
     last = st.get("complaint_last_id")
@@ -168,11 +165,17 @@ def order_events(st):
               "(o.chat_id=l.chat_id OR o.buyer_id=l.sender_user_id) AND o.status<>'cancelled' ORDER BY o.id DESC LIMIT 1) "
               "FROM xy_auto_reply_message_logs l WHERE l.id > %s AND l.reply_text LIKE %s ORDER BY l.id",
               [last, "%让您不满意了%"])
+    told = st.setdefault("complaint_buyers", [])   # one message per buyer, however many times they complain
     for lid, chat, buyer, title, src, at, status, signed in rows:
+        st["complaint_last_id"] = lid
+        who = str(buyer or chat)
+        if who in told:
+            continue
+        told.append(who)
         stage = "已签收" if signed and status in ("shipped", "pending_ship") else STAGE.get(status, "查不到订单")
         msgs.append(f"😟 有买家不满意（AI 已引导退货）\n商品：{clip(title, 40) or '（未知商品）'}　订单：{stage}　{str(at)[5:16]}\n"
                     f"买家说：「{clip(src, 80)}」\n前面几句：{buyer_words(chat, buyer, upto=lid, n=4)}")
-        st["complaint_last_id"] = lid
+    del told[:-500]
     return msgs
 
 
@@ -266,7 +269,7 @@ def save(st):
 
 
 NEED_TWICE = {"im_down", "containers"}   # short blips (restart / reconnect) should not wake the owner
-# Found in the log since the last check: one-off events. No 「已恢复」 for them; same event at most once per 2h,
+# Found in the log since the last check: one-off events. No 「已恢复」 for them; same event at most once a day,
 # except a failed greeting, which is always sent (each one is a different buyer).
 EVENTS = {"token_balance", "token_expired", "token_renew", "ai_api", "greeting", "slider", "risk"}
 
@@ -290,13 +293,13 @@ def main():
         pend.pop(k, None)
         if k in EVENTS:
             ev = st.setdefault("events", {})
-            if k == "greeting" or t - ev.get(k, 0) >= REPEAT_S:
+            if k == "greeting" or t - ev.get(k, 0) >= EVENT_QUIET_S:
                 msgs.append("❗" + text)
                 ev[k] = t
             continue
         o = st["open"].get(k)
-        if not o or t - o["sent"] >= REPEAT_S:
-            msgs.append(("❗" if not o else "❗仍未解决：") + text)
+        if not o or not o["sent"]:   # owner (2026-11-27): say it once, no reminders while it lasts
+            msgs.append("❗" + text)
             st["open"][k] = {"sent": t, "since": (o or {}).get("since", now_s), "text": text}
     for k in list(pend):
         if k not in probs:
@@ -305,7 +308,7 @@ def main():
         if k not in probs:
             o = st["open"].pop(k)
             msgs.append(f"✅已恢复：{o['text'][:40]}…（{o['since'][5:16]} 开始）")
-    prev_orders = (st.get("refund_seen"), st.get("complaint_last_id"))
+    prev_orders = (st.get("refund_seen"), st.get("complaint_last_id"), list(st.get("complaint_buyers", [])))
     try:
         msgs += order_events(st)
     except Exception as e:
@@ -323,7 +326,7 @@ def main():
             # nothing reached the owner: rescan the same log window next run and treat everything as unsent
             st["last_check"] = since
             if prev_orders[0] is not None:
-                st["refund_seen"], st["complaint_last_id"] = prev_orders
+                st["refund_seen"], st["complaint_last_id"], st["complaint_buyers"] = prev_orders
             for k in probs:
                 if k in st["open"] and st["open"][k]["sent"] == t:
                     st["open"][k]["sent"] = 0
