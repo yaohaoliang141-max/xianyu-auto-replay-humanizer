@@ -1,5 +1,11 @@
 # 改动记录
 
+## 2026-11-27 — Watchdog: Feishu message for every refund and every unhappy paid buyer
+
+- `ops/watchdog.py`: each new refund request (and each finished refund) is sent to Feishu with item, amount, order time, signed or not, and the buyer's last few messages. So is every time the AI sends the 「让您不满意了…可以直接退货」 script to a buyer who already paid, with the buyer's words and order stage. No nickname, receiver, address or phone.
+- The first run only remembers existing refunds and complaints (no backlog). If the Feishu send fails, these are sent again next run.
+- Not covered: paid-but-not-shipped buyers who are unhappy (the AI doesn't classify mood at that stage); a refund request from them is still sent.
+
 ## 2026-11-27 — 24h watchdog on the server, alerts straight to Feishu
 
 - New `ops/watchdog.py`, installed at `/opt/xianyu-local-modified/watchdog/` with `/etc/cron.d/xianyu-watchdog` (every 5 min). It runs on the server, so alerts still arrive when the owner's PC is off. Read-only.

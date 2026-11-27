@@ -6,6 +6,10 @@ Problems go straight to the owner's Feishu group bot. Each problem is sent once,
 2 hours while it lasts, and a 「已恢复」 message is sent when it clears. The first run after 09:00 each day
 adds a short "watchdog alive" message (no message that day = the watchdog itself stopped). `--test` sends
 one test message.
+Also (2026-11-27, owner's request): every new refund request / finished refund, and every time the AI sent the
+「让您不满意了…可以直接退货」 script to a buyer who already paid, is sent with item, amount, order stage and the
+buyer's own words (no nickname, receiver, address or phone)."""
+"""
 
 Files (server, not in git):
   /opt/xianyu-local-modified/watchdog/feishu-webhook   webhook URL, chmod 600 — never print or commit it
@@ -92,6 +96,84 @@ print(json.dumps({k: d.get(k) for k in ("running", "is_connected", "connection_s
         return json.loads(out.strip().splitlines()[-1])
     except Exception:
         return {}
+
+
+def db(query, params=None):
+    """Run one SELECT inside the websocket container (it has the DB driver and credentials); rows as lists."""
+    code = r'''
+import os, sys, json, pymysql
+a = json.loads(sys.stdin.readline())
+db = pymysql.connect(host=os.environ["MYSQL_HOST"], port=int(os.environ["MYSQL_PORT"]), user=os.environ["MYSQL_USER"],
+                     password=os.environ["MYSQL_PASSWORD"], database=os.environ["MYSQL_DATABASE"], charset="utf8mb4")
+c = db.cursor(); c.execute(a["q"], a["p"])
+print(json.dumps([list(r) for r in c.fetchall()], default=str, ensure_ascii=False))
+'''
+    out = subprocess.run(["docker", "exec", "-i", "xianyu-ecs-websocket-1", "python", "-c", code],
+                         input=json.dumps({"q": query, "p": params or []}) + "\n",
+                         capture_output=True, text=True, timeout=60)
+    if out.returncode:
+        raise RuntimeError("db query failed")
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def clip(s, n=60):
+    s = re.sub(r"\s+", " ", str(s or "")).strip()
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def buyer_words(chat_id, buyer_id, upto=None, n=3):
+    """Buyer's last few messages in this chat (text only, no names)."""
+    rows = db("SELECT source_message FROM xy_auto_reply_message_logs WHERE (chat_id=%s OR sender_user_id=%s) "
+              "AND decision_reason NOT IN ('self_message','system_message') AND source_message IS NOT NULL "
+              + ("AND id < %s " if upto else "") + "ORDER BY id DESC LIMIT %s",
+              [chat_id or "-", buyer_id or "-"] + ([upto] if upto else []) + [n])
+    words = [clip(r[0], 50) for r in rows if r[0] and not str(r[0]).startswith("[")]
+    return "；".join(f"「{w}」" for w in reversed(words)) or "（没说话）"
+
+
+STAGE = {"pending_ship": "已付款待发货", "shipped": "已发货", "completed": "已确认收货",
+         "refunding": "退款中", "refunded": "已退款", "cancelled": "已关闭"}
+
+
+def order_events(st):
+    """New refund requests, finished refunds, and complaints from paid buyers -> list of messages.
+    The first run only remembers what is there now (no backlog)."""
+    msgs = []
+    rows = db("SELECT o.order_no, o.status, o.amount, o.placed_at, o.chat_id, o.buyer_id, "
+              "JSON_EXTRACT(o.metadata,'$.signed_at') IS NOT NULL, "
+              "(SELECT title FROM xy_catalog_items c WHERE c.item_id=o.item_id LIMIT 1) "
+              "FROM xy_orders o WHERE o.status IN ('refunding','refunded')")
+    seen = st.get("refund_seen")
+    cur = {r[0]: r[1] for r in rows}
+    if seen is not None:
+        for no, status, amount, placed, chat, buyer, signed, title in rows:
+            if seen.get(no) == status:
+                continue
+            if status == "refunding" or (status == "refunded" and no not in seen):
+                head = "💸 有人申请退款" if status == "refunding" else "💸 有一单退款了（没经过「退款中」就直接退了）"
+                msgs.append(f"{head}\n商品：{clip(title, 40) or '（未知商品）'}\n金额：¥{amount}　下单：{str(placed)[5:16]}"
+                            f"　{'已签收' if signed else '未签收'}\n买家最近说的话：{buyer_words(chat, buyer)}")
+            elif status == "refunded":
+                msgs.append(f"✔️ 已退款：{clip(title, 30) or '（未知商品）'}　¥{amount}")
+    st["refund_seen"] = cur
+
+    last = st.get("complaint_last_id")
+    if last is None:
+        st["complaint_last_id"] = (db("SELECT COALESCE(MAX(id),0) FROM xy_auto_reply_message_logs") or [[0]])[0][0]
+        return msgs
+    rows = db("SELECT l.id, l.chat_id, l.sender_user_id, l.item_title, l.source_message, l.created_at, "
+              "(SELECT o.status FROM xy_orders o WHERE (o.chat_id=l.chat_id OR o.buyer_id=l.sender_user_id) "
+              "AND o.status<>'cancelled' ORDER BY o.id DESC LIMIT 1), "
+              "(SELECT JSON_EXTRACT(o.metadata,'$.signed_at') IS NOT NULL FROM xy_orders o WHERE "
+              "(o.chat_id=l.chat_id OR o.buyer_id=l.sender_user_id) AND o.status<>'cancelled' ORDER BY o.id DESC LIMIT 1) "
+              "FROM xy_auto_reply_message_logs l WHERE l.id > %s AND l.reply_text LIKE %s ORDER BY l.id",
+              [last, "%让您不满意了%"])
+    for lid, chat, buyer, title, src, at, status, signed in rows:
+        stage = "已签收" if signed and status in ("shipped", "pending_ship") else STAGE.get(status, "查不到订单")
+        msgs.append(f"😟 有买家不满意（AI 已引导退货）\n商品：{clip(title, 40) or '（未知商品）'}　订单：{stage}　{str(at)[5:16]}\n"
+                    f"买家说：「{clip(src, 80)}」\n前面几句：{buyer_words(chat, buyer, upto=lid, n=4)}")
+        st["complaint_last_id"] = lid
+    return msgs
 
 
 def checks(since):
@@ -223,6 +305,11 @@ def main():
         if k not in probs:
             o = st["open"].pop(k)
             msgs.append(f"✅已恢复：{o['text'][:40]}…（{o['since'][5:16]} 开始）")
+    prev_orders = (st.get("refund_seen"), st.get("complaint_last_id"))
+    try:
+        msgs += order_events(st)
+    except Exception as e:
+        print("order events failed:", type(e).__name__)
     today = now_s[:10]
     if "--heartbeat" in sys.argv or (int(now_s[11:13]) >= 9 and st.get("hb_day") != today):
         st["hb_day"] = today
@@ -235,6 +322,8 @@ def main():
         except Exception as e:
             # nothing reached the owner: rescan the same log window next run and treat everything as unsent
             st["last_check"] = since
+            if prev_orders[0] is not None:
+                st["refund_seen"], st["complaint_last_id"] = prev_orders
             for k in probs:
                 if k in st["open"] and st["open"][k]["sent"] == t:
                     st["open"][k]["sent"] = 0
