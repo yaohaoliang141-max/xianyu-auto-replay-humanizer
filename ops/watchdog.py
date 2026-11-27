@@ -6,9 +6,10 @@ Problems go straight to the owner's Feishu group bot. Owner's rules (2026-11-27)
 happens, say it once, and only what just happened (no 已恢复, no daily summary, no earlier chat).
 - An ongoing problem is sent once when it starts; nothing while it lasts or when it clears.
 - The same kind of log event (token 余额不足, AI errors, risk words...) at most once a day.
-- Each refunded order once: item, amount, signed or not.
+- Each refunded order once: buyer's Xianyu nickname, item, amount, signed or not.
 - Each unhappy paid buyer once (the first time the AI sends them the 「让您不满意了…可以直接退货」 script):
-  item, order stage and that message. No nickname, receiver, address or phone.
+  buyer's Xianyu nickname, item, order stage and that message.
+- The nickname is there because the owner asked (2026-11-27). Never the receiver's real name, address or phone.
 `--test` sends one test message.
 
 Files (server, not in git):
@@ -131,15 +132,27 @@ def order_events(st):
     msgs = []
     rows = db("SELECT o.order_no, o.status, o.amount, o.placed_at, o.chat_id, o.buyer_id, "
               "JSON_EXTRACT(o.metadata,'$.signed_at') IS NOT NULL, "
-              "(SELECT title FROM xy_catalog_items c WHERE c.item_id=o.item_id LIMIT 1) "
+              "(SELECT title FROM xy_catalog_items c WHERE c.item_id=o.item_id LIMIT 1), "
+              "COALESCE(NULLIF(o.buyer_fish_nick,''), NULLIF(o.buyer_nick,'')), "
+              # the order nickname is sometimes masked by Xianyu (x***4); the chat shows the full one
+              "(SELECT l.sender_user_name FROM xy_auto_reply_message_logs l WHERE l.sender_user_id=o.buyer_id "
+              "AND l.sender_user_name<>'' AND l.decision_reason NOT IN ('self_message','system_message') "
+              "AND l.sender_user_name NOT LIKE '%%*%%' AND l.sender_user_name NOT LIKE '买家%%' "
+              "AND l.sender_user_name NOT REGEXP '退款|退货|订单|发货|签收|付款|拍下' "
+              "AND l.sender_user_name <> COALESCE(l.source_message,'') "
+              "ORDER BY l.id DESC LIMIT 1) "
               "FROM xy_orders o WHERE o.status IN ('refunding','refunded')")
-    # owner (2026-11-27): say it once — one message per refunded order, nothing more when the refund completes
+    # owner (2026-11-27): say it once — one message per refunded order, nothing more when the refund completes;
+    # include the buyer's Xianyu nickname (owner asked) so they can find the chat. Never receiver name/address/phone.
     seen = st.get("refund_seen")
     cur = dict(seen or {})
-    for no, status, amount, placed, chat, buyer, signed, title in rows:
+    for no, status, amount, placed, chat, buyer, signed, title, nick, chat_nick in rows:
         if seen is not None and no not in seen:
+            if chat_nick and (not nick or "*" in str(nick)):
+                nick = chat_nick
             head = "💸 有人申请退款" if status == "refunding" else "💸 有一单退款了"
-            msgs.append(f"{head}：{clip(title, 40) or '（未知商品）'}　¥{amount}　{'已签收' if signed else '未签收'}")
+            msgs.append(f"{head}：买家「{clip(nick, 30) or '未知'}」\n{clip(title, 40) or '（未知商品）'}　¥{amount}"
+                        f"　{'已签收' if signed else '未签收'}")
         cur[no] = status
     st["refund_seen"] = cur
 
@@ -147,7 +160,7 @@ def order_events(st):
     if last is None:
         st["complaint_last_id"] = (db("SELECT COALESCE(MAX(id),0) FROM xy_auto_reply_message_logs") or [[0]])[0][0]
         return msgs
-    rows = db("SELECT l.id, l.chat_id, l.sender_user_id, l.item_title, l.source_message, l.created_at, "
+    rows = db("SELECT l.id, l.chat_id, l.sender_user_id, l.item_title, l.source_message, l.sender_user_name, "
               "(SELECT o.status FROM xy_orders o WHERE (o.chat_id=l.chat_id OR o.buyer_id=l.sender_user_id) "
               "AND o.status<>'cancelled' ORDER BY o.id DESC LIMIT 1), "
               "(SELECT JSON_EXTRACT(o.metadata,'$.signed_at') IS NOT NULL FROM xy_orders o WHERE "
@@ -155,14 +168,15 @@ def order_events(st):
               "FROM xy_auto_reply_message_logs l WHERE l.id > %s AND l.reply_text LIKE %s ORDER BY l.id",
               [last, "%让您不满意了%"])
     told = st.setdefault("complaint_buyers", [])   # one message per buyer, however many times they complain
-    for lid, chat, buyer, title, src, at, status, signed in rows:
+    for lid, chat, buyer, title, src, nick, status, signed in rows:
         st["complaint_last_id"] = lid
         who = str(buyer or chat)
         if who in told:
             continue
         told.append(who)
         stage = "已签收" if signed and status in ("shipped", "pending_ship") else STAGE.get(status, "查不到订单")
-        msgs.append(f"😟 买家不满意（AI 已引导退货）：{clip(title, 40) or '（未知商品）'}　{stage}\n买家说：「{clip(src, 80)}」")
+        msgs.append(f"😟 买家不满意（AI 已引导退货）：买家「{clip(nick, 30) or '未知'}」\n"
+                    f"{clip(title, 40) or '（未知商品）'}　{stage}\n买家说：「{clip(src, 80)}」")
     del told[:-500]
     return msgs
 

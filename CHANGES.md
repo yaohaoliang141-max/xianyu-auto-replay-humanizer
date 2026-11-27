@@ -1,5 +1,10 @@
 # 改动记录
 
+## 2026-11-27 — Watchdog: buyer nickname in refund and complaint alerts
+
+- Owner asked for the buyer's name. Refund and 「买家不满意」 messages now start with the buyer's Xianyu nickname, so the owner can find the chat. The receiver's real name, address and phone are still never sent.
+- Xianyu masks some order nicknames (e.g. `x***4`, 33 of 252 orders). For those, the name shown in the buyer's own chat messages is used. System card titles (「我发起了退款申请」, 「买家已拍下…」) are filtered out. If the buyer never chatted, the masked name stays.
+
 ## 2026-11-27 — Watchdog: say it the moment it happens, only what happened
 
 - Cron now runs every minute (one run takes about 4s), so alerts arrive within about a minute.
