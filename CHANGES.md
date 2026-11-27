@@ -1,5 +1,10 @@
 # 改动记录
 
+## 2026-11-27 — Watchdog: say it the moment it happens, only what happened
+
+- Cron now runs every minute (one run takes about 4s), so alerts arrive within about a minute.
+- Only the event itself is sent. No 「已恢复」 when a problem clears, no daily 「报平安」, and no earlier chat lines. A refund is one line (item, amount, signed or not). A complaint is the item, the order stage and that one buyer message.
+
 ## 2026-11-27 — Watchdog: say each thing once
 
 - Owner's rule: no repeated reminders. An ongoing problem is sent once (the 2-hourly 「仍未解决」 reminder is gone), plus one 「已恢复」 line when it clears. The same kind of log event (token 余额不足, AI errors, risk words…) is sent at most once a day.

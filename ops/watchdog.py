@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""24h watchdog for the Xianyu auto-reply server. Runs on the server itself (cron, every 5 minutes),
+"""24h watchdog for the Xianyu auto-reply server. Runs on the server itself (cron, every minute),
 so it keeps working when the owner's PC is off. Read-only: it changes nothing in the app.
 
-Problems go straight to the owner's Feishu group bot. Owner's rule (2026-11-27): say each thing ONCE.
-- An ongoing problem is sent once (no reminders while it lasts), plus one 「已恢复」 line when it clears.
+Problems go straight to the owner's Feishu group bot. Owner's rules (2026-11-27): say it right when it
+happens, say it once, and only what just happened (no 已恢复, no daily summary, no earlier chat).
+- An ongoing problem is sent once when it starts; nothing while it lasts or when it clears.
 - The same kind of log event (token 余额不足, AI errors, risk words...) at most once a day.
-- Each refunded order once (when it first shows up as 退款中/已退款).
-- Each unhappy paid buyer once (the first time the AI sends them the 「让您不满意了…可以直接退货」 script),
-  with item, order stage and the buyer's own words. No nickname, receiver, address or phone.
-The first run after 09:00 each day adds a short "watchdog alive" line (none that day = watchdog stopped).
+- Each refunded order once: item, amount, signed or not.
+- Each unhappy paid buyer once (the first time the AI sends them the 「让您不满意了…可以直接退货」 script):
+  item, order stage and that message. No nickname, receiver, address or phone.
 `--test` sends one test message.
 
 Files (server, not in git):
@@ -121,16 +121,6 @@ def clip(s, n=60):
     return s if len(s) <= n else s[:n] + "…"
 
 
-def buyer_words(chat_id, buyer_id, upto=None, n=3):
-    """Buyer's last few messages in this chat (text only, no names)."""
-    rows = db("SELECT source_message FROM xy_auto_reply_message_logs WHERE (chat_id=%s OR sender_user_id=%s) "
-              "AND decision_reason NOT IN ('self_message','system_message') AND source_message IS NOT NULL "
-              + ("AND id < %s " if upto else "") + "ORDER BY id DESC LIMIT %s",
-              [chat_id or "-", buyer_id or "-"] + ([upto] if upto else []) + [n])
-    words = [clip(r[0], 50) for r in rows if r[0] and not str(r[0]).startswith("[")]
-    return "；".join(f"「{w}」" for w in reversed(words)) or "（没说话）"
-
-
 STAGE = {"pending_ship": "已付款待发货", "shipped": "已发货", "completed": "已确认收货",
          "refunding": "退款中", "refunded": "已退款", "cancelled": "已关闭"}
 
@@ -149,8 +139,7 @@ def order_events(st):
     for no, status, amount, placed, chat, buyer, signed, title in rows:
         if seen is not None and no not in seen:
             head = "💸 有人申请退款" if status == "refunding" else "💸 有一单退款了"
-            msgs.append(f"{head}\n商品：{clip(title, 40) or '（未知商品）'}\n金额：¥{amount}　下单：{str(placed)[5:16]}"
-                        f"　{'已签收' if signed else '未签收'}\n买家最近说的话：{buyer_words(chat, buyer)}")
+            msgs.append(f"{head}：{clip(title, 40) or '（未知商品）'}　¥{amount}　{'已签收' if signed else '未签收'}")
         cur[no] = status
     st["refund_seen"] = cur
 
@@ -173,8 +162,7 @@ def order_events(st):
             continue
         told.append(who)
         stage = "已签收" if signed and status in ("shipped", "pending_ship") else STAGE.get(status, "查不到订单")
-        msgs.append(f"😟 有买家不满意（AI 已引导退货）\n商品：{clip(title, 40) or '（未知商品）'}　订单：{stage}　{str(at)[5:16]}\n"
-                    f"买家说：「{clip(src, 80)}」\n前面几句：{buyer_words(chat, buyer, upto=lid, n=4)}")
+        msgs.append(f"😟 买家不满意（AI 已引导退货）：{clip(title, 40) or '（未知商品）'}　{stage}\n买家说：「{clip(src, 80)}」")
     del told[:-500]
     return msgs
 
@@ -306,18 +294,12 @@ def main():
             pend.pop(k)
     for k in list(st["open"]):
         if k not in probs:
-            o = st["open"].pop(k)
-            msgs.append(f"✅已恢复：{o['text'][:40]}…（{o['since'][5:16]} 开始）")
+            st["open"].pop(k)   # cleared: forget it silently, so it is reported again if it comes back
     prev_orders = (st.get("refund_seen"), st.get("complaint_last_id"), list(st.get("complaint_buyers", [])))
     try:
         msgs += order_events(st)
     except Exception as e:
         print("order events failed:", type(e).__name__)
-    today = now_s[:10]
-    if "--heartbeat" in sys.argv or (int(now_s[11:13]) >= 9 and st.get("hb_day") != today):
-        st["hb_day"] = today
-        opened = "；".join(o["text"][:30] for o in st["open"].values())
-        msgs.append("每日报平安：监控正常运行中。" + (f"目前未解决的问题：{opened}" if opened else "目前没有发现问题。"))
     if msgs:
         try:
             if not send("\n".join(msgs)):
